@@ -61,7 +61,3 @@ Top of `gotempo.lua`.
 | `MIN_BPM` / `MAX_BPM` | `20` / `999` | Outside this hides the panel |
 | `STALE_AFTER_SECONDS` | `60` | Timestamp age before hiding |
 | `HIDE_WHEN_STALE` | `true` | `false` shows `STALE_TEXT` instead |
-
-## License
-
-MIT
