@@ -66,7 +66,7 @@ position and the heart grows away from them. Enlarging the heart therefore needs
 | --- | --- | --- |
 | `HR_FILES` | `Modules/hr.txt`, `Modules/hr-p2.txt` | Files to read, P1 and P2 |
 | `POLL_SECONDS` | `1` | Read interval |
-| `DEBUG_BG` | `true` | Paint each panel a bright colour and keep it visible with no reading, to see the space it occupies while positioning. Turn off when done |
+| `DEBUG_BG` | `false` | Paint each panel a bright colour and keep it visible with no reading, to see the space it occupies while positioning. Turn off when done |
 | `DEBUG_BG_COLORS` | magenta, cyan | Debug colour per player |
 | `CORNER_SIDE` | `"auto"` | One player only: `auto`, `left` or `right` |
 | `DUAL_INSET` | `0.042` | Two players: gap from centre, as a fraction of width, clearing the game-mode text |
@@ -76,9 +76,9 @@ position and the heart grows away from them. Enlarging the heart therefore needs
 | `DUAL_PADDING` | `2` | Two players: inset inside the panel |
 | `DUAL_TEXT_SCALE` | `1` | Two players: digit size, as a fraction of "three digits fill the width" |
 | `DUAL_ICON_SCALE` | `2.4` | Two players: heart height relative to the digits |
-| `DUAL_STACK_GAP` | `6.5` | Two players: gap between the heart and the digits |
+| `DUAL_STACK_GAP` | `9.5` | Two players: gap between the heart and the digits |
 | `DUAL_DIGIT_BOTTOM` | `23` | Two players: panel bottom to the digits' centre line. Raise to move the digits up |
-| `DUAL_HEIGHT` | `60` | Two players: panel height. Must fit the digits' line plus the heart above it |
+| `DUAL_HEIGHT` | `64` | Two players: panel height. Must fit the digits' line plus the heart above it |
 | `DUAL_MARGIN_BOTTOM` | `6` | Two players: gap to the bottom edge |
 | `PANEL_Y` | `15` | One player: top edge |
 | `PANEL_HEIGHT` | `50` | One player: panel height |

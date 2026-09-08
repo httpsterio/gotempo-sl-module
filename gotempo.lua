@@ -52,7 +52,7 @@ local POLL_SECONDS = 1
 -- Paint the panel background a bright colour and keep it visible even with no
 -- reading, so you can see exactly what space it occupies while positioning it.
 -- Turn this off once you are happy with the geometry.
-local DEBUG_BG = true
+local DEBUG_BG = false
 local DEBUG_BG_COLORS = {
 	color("#ff00ffcc"),	-- P1: magenta
 	color("#00ffffcc"),	-- P2: cyan
@@ -113,7 +113,7 @@ local DUAL_MIN_WIDTH = 40
 local DUAL_PADDING = 2		-- inset inside the panel; smaller than PADDING, the slot is tight
 local DUAL_TEXT_SCALE = 1	-- fraction of "three digits fill the panel width"
 local DUAL_ICON_SCALE = 2.4	-- heart height relative to the digits' cap height
-local DUAL_STACK_GAP = 6.5	-- gap between the heart and the digits
+local DUAL_STACK_GAP = 9.5	-- gap between the heart and the digits
 local DUAL_DIGITS = 3		-- the readout is three digits wide
 local DUAL_DIGIT_BOTTOM = 23	-- panel bottom to the digits' centre line
 
@@ -122,7 +122,7 @@ local DUAL_DIGIT_BOTTOM = 23	-- panel bottom to the digits' centre line
 -- would otherwise crowd them.  The height is what the stack needs -- the digits'
 -- line plus the heart above it -- not a box drawn around free space, so raising
 -- DUAL_ICON_SCALE means raising this too or the heart clips out of the top.
-local DUAL_HEIGHT = 60
+local DUAL_HEIGHT = 64
 local DUAL_MARGIN_BOTTOM = 6
 
 -- Which corner the single-player panel sits in.  "auto" picks the one opposite
