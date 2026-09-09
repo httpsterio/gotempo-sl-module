@@ -39,6 +39,24 @@ untouched. A lone player reads `hr.txt` whichever side they are on.
 gotempo --itgmania-module "~/.itgmania/Themes/Simply Love/Modules/gotempo.lua"
 ```
 
+## Profiles
+
+A player can name their own heart-rate strap in their profile, and gotempo will follow it while
+they play. Add `gotempo.ini` to the profile folder:
+
+```ini
+[gotempo]
+Device=24:AC:AC:18:41:CC
+```
+
+The module publishes `players.txt` beside `hr.txt` once a second, on song select, gameplay and
+evaluation, saying which sides are joined and what each named. Song select matters: a strap takes
+a few seconds to connect, so gotempo has to know before the first note.
+
+Sides that name nothing still appear, as `-`. gotempo needs the difference between "nobody is on
+P2" and "someone is on P2 who named nothing", since the first leaves that slot alone and the
+second puts the machine's configured strap on it.
+
 ## Config
 
 Top of `gotempo.lua`.

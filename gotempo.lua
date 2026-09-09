@@ -3,6 +3,11 @@
 -- Reads BPM values from Modules/hr.txt (and hr-p2.txt with two players joined)
 -- and draws them onto ScreenGameplay.
 --
+-- It also writes the other direction.  players.txt, beside those files, tells
+-- gotempo who is playing and which strap each of them says is theirs, read from
+-- their own game profile.  That is what lets a regular at a cabinet use their
+-- own belt without anyone walking round to the PC to pick it from a menu.
+--
 -- File format, one line:   "<bpm> <YYYYMMDD> <secondsSinceLocalMidnight>"
 --                    e.g.  "154 20260904 52327"
 --
@@ -39,15 +44,40 @@
 -------( Configuration Parameters )--------
 -------------------------------------------
 
--- P1 reads hr.txt, P2 reads hr-p2.txt.  A lone player reads hr.txt whichever
--- side they are on: gotempo's two slots are about straps, not about which side
--- of the cabinet someone stepped onto, and a single player is served by a
--- gotempo that is almost certainly writing only hr.txt.
+-- P1 reads hr.txt, P2 reads hr-p2.txt, always, including a player alone on the
+-- P2 side.  gotempo puts the strap on the side that is actually joined, which it
+-- learns from players.txt below, so the file a panel reads is always the file
+-- its own side is written to.
 local HR_FILES = {
 	THEME:GetCurrentThemeDirectory() .. "Modules/hr.txt",
 	THEME:GetCurrentThemeDirectory() .. "Modules/hr-p2.txt",
 }
 local POLL_SECONDS = 1
+
+-- Published beside hr.txt for gotempo to read, once a second:
+--
+--	20260908 52327
+--	p1 24:AC:AC:18:41:CC
+--	p2 -
+--
+-- A line means that side is joined, "-" means joined having named no strap, and
+-- no line means nobody is there.  gotempo needs all three: "nobody is on P2" and
+-- "someone is on P2 who configured nothing" want opposite behaviour, the first
+-- leaving that slot idle and the second putting the configured strap on it.
+--
+-- The stamp is this module's own clock, in the same format hr.txt carries the
+-- other way.  It is what releases the straps when the game exits or crashes:
+-- there is no goodbye to send, so a stamp that stops advancing is the signal.
+local PLAYERS_FILE = THEME:GetCurrentThemeDirectory() .. "Modules/players.txt"
+
+-- Where a player names their strap, in their own profile, following the
+-- convention ArrowCloud and GrooveStats already use:
+--
+--	[gotempo]
+--	Device=24:AC:AC:18:41:CC
+local PROFILE_INI = "gotempo.ini"
+local PROFILE_SECTION = "gotempo"
+local PROFILE_KEY = "Device"
 
 -- Paint the panel background a bright colour and keep it visible even with no
 -- reading, so you can see exactly what space it occupies while positioning it.
@@ -272,6 +302,50 @@ local function FieldEdgeFromCentre(pn)
 end
 
 
+local PROFILE_SLOTS = { "ProfileSlot_Player1", "ProfileSlot_Player2" }
+local SIDES = { "PlayerNumber_P1", "PlayerNumber_P2" }
+
+
+-- The strap this side's player named in their profile, or nil.  Empty when no
+-- explicit profile is loaded, which is the usual case for a casual player: they
+-- simply get whatever the machine is set to.
+local function ProfileDevice(pn)
+	if PROFILEMAN == nil or IniFile == nil then return nil end
+
+	local dir = PROFILEMAN:GetProfileDir(PROFILE_SLOTS[pn])
+	if not dir or #dir == 0 then return nil end
+
+	local contents = IniFile.ReadFile(dir .. PROFILE_INI)
+	if not contents or not contents[PROFILE_SECTION] then return nil end
+
+	local mac = contents[PROFILE_SECTION][PROFILE_KEY]
+	if type(mac) ~= "string" or #mac == 0 then return nil end
+	return mac
+end
+
+
+-- Publishes who is playing.  Called on every tick rather than on screen entry:
+-- the stamp is the payload, so a file that stops being rewritten is how gotempo
+-- learns the game is gone.  Sides are reported even when they name no strap.
+local function WritePlayers()
+	local lines = { string.format("%04d%02d%02d %d",
+		Year(), MonthOfYear() + 1, DayOfMonth(), secondsOfDay()) }
+
+	for pn = 1, 2 do
+		if GAMESTATE:IsSideJoined(SIDES[pn]) then
+			lines[#lines+1] = string.format("p%d %s", pn, ProfileDevice(pn) or "-")
+		end
+	end
+
+	local file = RageFileUtil.CreateRageFile()
+	if file:Open(PLAYERS_FILE, 2) then
+		file:Write(table.concat(lines, "\n") .. "\n")
+		file:Close()
+	end
+	file:destroy()
+end
+
+
 -- Returns {x, y, w, h} for a player's panel, or nil when they have none this
 -- round: either that side is not joined, or (one player, CORNER_SIDE forced)
 -- there is no corner for them.
@@ -473,6 +547,7 @@ t.ScreenGameplay = Def.ActorFrame{
 	end,
 
 	TickCommand=function(self)
+		WritePlayers()
 		for pn = 1, 2 do
 			local s = state[pn]
 			s.bpm = (s.geo ~= nil) and ReadHeartRate(s.file) or nil
@@ -484,5 +559,29 @@ t.ScreenGameplay = Def.ActorFrame{
 	Panel(1),
 	Panel(2),
 }
+
+-- The same publish loop with nothing to draw, for the screens either side of a
+-- song.  Select-music is the one that matters: a strap takes a few seconds to
+-- connect, so gotempo has to be told who is playing before the first note, not
+-- as it arrives.  The evaluation screens keep the stamp alive between songs so
+-- the straps are not released and reacquired every round.
+local function PublishOnly()
+	return Def.ActorFrame{
+		ModuleCommand=function(self)
+			self:stoptweening()
+			self:queuecommand("Tick")
+		end,
+		TickCommand=function(self)
+			WritePlayers()
+			self:sleep(POLL_SECONDS):queuecommand("Tick")
+		end,
+	}
+end
+
+t.ScreenSelectMusic = PublishOnly()
+t.ScreenEvaluation = PublishOnly()
+t.ScreenEvaluationStage = PublishOnly()
+t.ScreenEvaluationNonstop = PublishOnly()
+t.ScreenEvaluationSummary = PublishOnly()
 
 return t
