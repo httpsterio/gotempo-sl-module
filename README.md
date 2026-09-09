@@ -6,13 +6,15 @@ splits into a panel per player along the bottom edge, either side of the game-mo
 
 ## Install
 
-Copy `gotempo.lua` and `heart (mipmaps).png` into Simply Love's `Modules/` folder, then restart.
+Copy `gotempo.lua` and the `gotempo/` folder into Simply Love's `Modules/` folder, then restart.
+The `.lua` has to sit directly in `Modules/`: the loader lists that folder without recursing and
+keeps only `*.lua`. Everything else this module owns lives in `Modules/gotempo/`.
 
 - Linux — `~/.itgmania/Themes/Simply Love/Modules/`
 - Windows — `%APPDATA%\ITGmania\Themes\Simply Love\Modules\`
 - macOS — `~/Library/Application Support/ITGmania/Themes/Simply Love/Modules/`
 
-Keep the parentheses in `heart (mipmaps).png`; it's a StepMania filename hint for mipmapping.
+Keep the parentheses in `gotempo/heart (mipmaps).png`; it's a StepMania filename hint for mipmapping.
 With one side joined the panel sits in the header corner opposite your score. With both
 joined the header corners are taken by the two scores, so the panels move to the bottom
 centre instead: that strip is the one part of a two-player screen that keeps its shape
@@ -20,7 +22,7 @@ whatever modifiers are on.
 
 ## Data
 
-The module reads `hr.txt` from its own folder once a second and never writes it. One line:
+The module reads `gotempo/hr.txt` once a second and never writes it. One line:
 
 ```
 154 20260904 52327
@@ -29,9 +31,21 @@ The module reads `hr.txt` from its own folder once a second and never writes it.
 BPM, date, and seconds since midnight, in local time. Write every second even when the BPM
 hasn't changed, or the panel hides after 60 seconds.
 
-With both sides joined it also reads `hr-p2.txt` for P2, in the same format. There is no
-`hr-p1.txt`: P1 always reads `hr.txt`, so an existing single-player setup keeps working
-untouched. A lone player reads `hr.txt` whichever side they are on.
+P2 reads `gotempo/hr-p2.txt`, same format. There is no `hr-p1.txt`, so an existing single-player setup
+keeps working untouched.
+
+It writes one file, `gotempo/players.txt`, which is how gotempo knows who is playing and therefore which
+strap to connect for each side. Rewritten once a second on song select, gameplay and evaluation:
+
+```
+20260908 52327
+p1 24:AC:AC:18:41:CC
+p2 -
+```
+
+Date and seconds since midnight, then a line per joined side naming that player's strap, or `-`
+if they have none. A side with nobody on it gets no line. gotempo releases the straps when the
+stamp stops advancing, which is what covers the game being closed or killed.
 
 [gotempo](https://github.com/httpsterio/gotempo) does this from a Bluetooth strap:
 
@@ -49,9 +63,8 @@ A player can name their own strap in their profile and gotempo follows it while 
 Device=24:AC:AC:18:41:CC
 ```
 
-The module publishes `players.txt` beside `hr.txt` once a second, on song select, gameplay and
-evaluation, listing which sides are joined and what each named (`-` for nothing). Straps are
-released when it stops, so leaving the song flow frees them.
+Pair the strap to the machine once first. Nothing is saved on gotempo's side, so leaving the song
+flow, or quitting the game, hands the straps back to whatever it was set to before.
 
 ## Config
 
@@ -78,7 +91,7 @@ position and the heart grows away from them. Enlarging the heart therefore needs
 
 | | Default | |
 | --- | --- | --- |
-| `HR_FILES` | `Modules/hr.txt`, `Modules/hr-p2.txt` | Files to read, P1 and P2 |
+| `HR_FILES` | `Modules/gotempo/hr.txt`, `hr-p2.txt` | Files to read, P1 and P2 |
 | `POLL_SECONDS` | `1` | Read interval |
 | `DEBUG_BG` | `false` | Paint each panel a bright colour and keep it visible with no reading, to see the space it occupies while positioning. Turn off when done |
 | `DEBUG_BG_COLORS` | magenta, cyan | Debug colour per player |
@@ -101,7 +114,7 @@ position and the heart grows away from them. Enlarging the heart therefore needs
 | `PADDING` | `5` | Inset inside the panel |
 | `TEXT_SCALE` | `0.84` | Digit size |
 | `INK_OFFSET` | `22` | Digits up |
-| `ICON_TEXTURE` | `heart (mipmaps).png` | |
+| `ICON_TEXTURE` | `gotempo/heart (mipmaps).png` | |
 | `ICON_SCALE` | `1.6` | Heart size |
 | `ICON_GAP` | `6` | Gap to the digits |
 | `ICON_Y_NUDGE` | `-5` | Heart up |

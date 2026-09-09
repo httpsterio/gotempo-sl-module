@@ -48,9 +48,15 @@
 -- P2 side.  gotempo puts the strap on the side that is actually joined, which it
 -- learns from players.txt below, so the file a panel reads is always the file
 -- its own side is written to.
+-- Everything this module owns lives in one folder beside it.  The .lua itself
+-- cannot: the loader lists Modules/ without recursing and keeps only *.lua, so a
+-- nested module is never loaded (verified, not assumed).  Its files can, which
+-- at least keeps them from being loose among every other module's.
+local GOTEMPO_DIR = THEME:GetCurrentThemeDirectory() .. "Modules/gotempo/"
+
 local HR_FILES = {
-	THEME:GetCurrentThemeDirectory() .. "Modules/hr.txt",
-	THEME:GetCurrentThemeDirectory() .. "Modules/hr-p2.txt",
+	GOTEMPO_DIR .. "hr.txt",
+	GOTEMPO_DIR .. "hr-p2.txt",
 }
 local POLL_SECONDS = 1
 
@@ -68,7 +74,7 @@ local POLL_SECONDS = 1
 -- The stamp is this module's own clock, in the same format hr.txt carries the
 -- other way.  It is what releases the straps when the game exits or crashes:
 -- there is no goodbye to send, so a stamp that stops advancing is the signal.
-local PLAYERS_FILE = THEME:GetCurrentThemeDirectory() .. "Modules/players.txt"
+local PLAYERS_FILE = GOTEMPO_DIR .. "players.txt"
 
 -- Where a player names their strap, in their own profile, following the
 -- convention ArrowCloud and GrooveStats already use:
@@ -186,8 +192,9 @@ local TEXT_SCALE = 0.84
 local ICON_SCALE = 1.6		-- icon height relative to the digits' cap height
 local ICON_GAP = 6		-- gap between icon and digits
 
--- Resolved relative to this module's own directory, not the theme root.
-local ICON_TEXTURE = "heart (mipmaps).png"
+-- Resolved relative to this module's own directory, not the theme root, so the
+-- subfolder is part of the path.
+local ICON_TEXTURE = "gotempo/heart (mipmaps).png"
 
 -- The monospace number font only contains "1234567890.:/ ", so the no-data
 -- placeholder can only use those characters.
