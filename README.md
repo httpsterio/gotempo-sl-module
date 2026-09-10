@@ -1,6 +1,7 @@
 # gotempo — Simply Love heart rate module
 
-Shows your heart rate during gameplay in ITGmania: a heart that beats at your BPM and a
+Shows your heart rate during gameplay in ITGmania, and draws it over the density graph on the
+evaluation screen afterwards: a heart that beats at your BPM and a
 three-digit readout. With one player it sits in the top corner of the header; with two it
 splits into a panel per player along the bottom edge, either side of the game-mode text.
 
@@ -66,6 +67,17 @@ Device=24:AC:AC:18:41:CC
 Pair the strap to the machine once first. Nothing is saved on gotempo's side, so leaving the song
 flow, or quitting the game, hands the straps back to whatever it was set to before.
 
+## Evaluation graph
+
+After a song, your heart rate is drawn as a pink line over the density graph, sharing its time
+axis so a peak sits above the part of the chart that caused it. Two players each get their own.
+
+Samples are kept in memory for one song and thrown away when the next starts; nothing is written
+and nothing accumulates. They are bucketed into `HR_GRAPH_POINTS` evenly spaced points and run
+through a short moving average, so the line shows effort rather than sensor jitter. Course modes
+are skipped: their density graph is built from several songs and one song's samples would not line
+up with it.
+
 ## Config
 
 Top of `gotempo.lua`.
@@ -119,6 +131,12 @@ position and the heart grows away from them. Enlarging the heart therefore needs
 | `ICON_GAP` | `6` | Gap to the digits |
 | `ICON_Y_NUDGE` | `-5` | Heart up |
 | `PULSE` | `true` | Beat at the current BPM |
+| `HR_GRAPH` | `true` | Draw the line on the evaluation screen |
+| `HR_GRAPH_POINTS` | `48` | Points across the graph; raise for detail |
+| `HR_GRAPH_SMOOTH` | `3` | Moving-average window in points; `1` disables |
+| `HR_GRAPH_MIN` / `HR_GRAPH_MAX` | `40` / `200` | BPM at the bottom and top of the box |
+| `HR_GRAPH_THICKNESS` | `1.5` | Half-height of the line |
+| `HR_GRAPH_COLOR` | pink | |
 | `PULSE_MAGNITUDE` | `1.15` | Swell per beat |
 | `BG_COLOR` | transparent | |
 | `TEXT_COLOR` | `#ffffff` | |

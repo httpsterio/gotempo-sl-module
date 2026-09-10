@@ -76,6 +76,82 @@ local POLL_SECONDS = 1
 -- there is no goodbye to send, so a stamp that stops advancing is the signal.
 local PLAYERS_FILE = GOTEMPO_DIR .. "players.txt"
 
+-- The heart-rate line drawn over the density graph on the evaluation screen.
+--
+-- Samples are collected once a second during gameplay, against the song's own
+-- clock rather than a tick count, so the line shares an x-axis with the density
+-- graph underneath it without any correction.  They live in memory only: the
+-- module chunk is loaded once for the program's life, so a table here survives
+-- gameplay to evaluation, and nothing needs to reach the disk.
+--
+-- A vertex per second draws a line that shakes with ordinary sensor noise. The
+-- samples are bucketed into a fixed number of evenly spaced points instead, so a
+-- ninety-second song and a ten-minute one get the same treatment, and then run
+-- through a short moving average so what is left reads as effort rather than
+-- jitter.  Raise HR_GRAPH_POINTS for detail, HR_GRAPH_SMOOTH for calm.
+-- The line scales to the readings rather than to a fixed range, so a song spent
+-- between 102 and 108 shows its shape instead of a flat streak.  That trades
+-- away comparability between songs: every graph fills the box, and the only
+-- thing saying whether it was a warmup or a wall is the labels.  They are not
+-- decoration here.
+local HR_GRAPH = true
+local HR_GRAPH_POINTS = 64
+local HR_GRAPH_SMOOTH = 1		-- moving-average window, in points; 1 disables
+local HR_GRAPH_PAD = 0.1		-- headroom above the peak and below the trough
+local HR_GRAPH_THICKNESS = 1.5		-- half-height of the drawn ribbon
+local HR_GRAPH_COLOR = { 1, 0.31, 0.64, 1 }	-- pink, distinct from the lifebar and the scatter dots
+
+-- The min, max and mean readings, written up the right-hand edge at the height
+-- each one sits at.  The mean is dropped when it would collide with one of the
+-- other two, since those define the scale and it does not.
+-- Up the left edge, where the song's lead-in leaves the density graph empty.
+local HR_LABEL_ZOOM = 0.13
+local HR_LABEL_INSET = 1		-- from the left edge of the box
+local HR_LABEL_PAD = 2			-- around the text, inside its backing
+local HR_LABEL_COLOR = { 1, 0.31, 0.64, 1 }
+local HR_LABEL_BG = { 0, 0, 0, 0.65 }	-- the density bars run underneath
+
+-- The mean also gets a rule across the whole box, faint enough to read as a
+-- reference rather than as another series.
+local HR_MEAN_LINE = { 1, 0.31, 0.64, 0.5 }
+local HR_MEAN_LINE_H = 0.7
+
+-- A gap in the readings is drawn as a gap.  Two separate things can stop them:
+-- the strap coming off skin, and the connection dropping.  Neither is announced,
+-- but gotempo rewrites hr.txt on every reading with a fresh timestamp -- the
+-- timestamp is the payload, not the bpm -- so a stamp that stops advancing means
+-- nothing arrived.
+--
+-- Both clocks tick once a second and neither is synchronised to the other, so
+-- seeing the same stamp twice happens while perfectly healthy.  Three in a row
+-- does not.
+local HR_STALE_POLLS = 3
+local HR_GRAPH_GAP = 3			-- seconds of silence that break the line
+
+-- A heart in the corner of every other screen, so the wait for a strap to
+-- connect is visible somewhere other than the tray.  Lit and beating when a
+-- reading is arriving on either side, dim when not: connecting can take a good
+-- few seconds and a strap that is asleep or off skin never connects at all,
+-- which is otherwise indistinguishable from the module being broken.
+local STATUS_HEART = true
+local STATUS_HEART_SIZE = 14
+local STATUS_HEART_MARGIN = 8		-- from the screen corner
+local STATUS_HEART_LIVE = { 1, 0.18, 0.31, 1 }
+local STATUS_HEART_DEAD = { 1, 1, 1, 0.18 }
+local STATUS_HEART_SCREENS = {
+	"ScreenTitleMenu", "ScreenSelectProfile", "ScreenSelectPlayMode",
+	"ScreenSelectStyle", "ScreenSelectMusic", "ScreenPlayerOptions",
+}
+
+-- Simply Love's evaluation layout, which a module has to recompute because it
+-- draws in ScreenSystemLayer and cannot reach that screen's actors.  From
+-- BGAnimations/ScreenEvaluation common/PerPlayer/Lower/{default,Graphs}.lua.
+-- If the graph drifts off its box after a theme update, these are why.
+local EVAL_PANE_W = 300
+local EVAL_PANE_GAP = 10
+local EVAL_ONE_PLAYER_NUDGE = 0.2541
+local EVAL_GRAPH_Y = 124		-- below _screen.cy
+
 -- Where a player names their strap, in their own profile, following the
 -- convention ArrowCloud and GrooveStats already use:
 --
@@ -239,8 +315,8 @@ local HIDE_WHEN_STALE = true
 -- file-scope values because both panels live in one module: a single `bpm` would
 -- have the two of them overwrite each other every poll.
 local state = {
-	{ bpm=nil, pulseBpm=nil, geo=nil, file=HR_FILES[1] },
-	{ bpm=nil, pulseBpm=nil, geo=nil, file=HR_FILES[2] },
+	{ bpm=nil, pulseBpm=nil, geo=nil, file=HR_FILES[1], samples={}, stamp=nil, repeats=0 },
+	{ bpm=nil, pulseBpm=nil, geo=nil, file=HR_FILES[2], samples={}, stamp=nil, repeats=0 },
 }
 
 
@@ -279,6 +355,7 @@ local function ReadHeartRate(path)
 	-- hour today, so a file left behind by an earlier session would look fresh.
 	-- Absent fields mean the check is skipped entirely.
 	local stampDate, stampSecs = text:match("%d+%D+(%d+)%D+(%d+)")
+	local stamp = stampDate and stampSecs and (stampDate .. ":" .. stampSecs) or nil
 	if stampDate and stampSecs then
 		if tonumber(stampDate) ~= todayStamp() then return nil end
 
@@ -291,7 +368,7 @@ local function ReadHeartRate(path)
 		if age > STALE_AFTER_SECONDS then return nil end
 	end
 
-	return value
+	return value, stamp
 end
 
 
@@ -457,6 +534,8 @@ local function Panel(pn)
 			state[pn].geo = g
 			state[pn].bpm = nil
 			state[pn].pulseBpm = nil
+			state[pn].samples = {}	-- one song's worth; the graph reads it on evaluation
+			state[pn].stamp, state[pn].repeats = nil, 0
 
 			-- Stay hidden until the first Tick has actually read the file, so
 			-- entering gameplay never flashes a frame of placeholder text.
@@ -542,6 +621,313 @@ local function Panel(pn)
 end
 
 
+-- Where ScreenEvaluation draws this player's graph box, in screen units.
+-- Recomputed from the theme's own layout: see the EVAL_ constants above.
+local function EvalGraphBox(pn)
+	local players = #GAMESTATE:GetHumanPlayers()
+	local w = THEME:GetMetric("GraphDisplay", "BodyWidth")
+	local h = THEME:GetMetric("GraphDisplay", "BodyHeight")
+
+	-- With one player the pane is centred whichever side they are on; with two,
+	-- each gets their own half.
+	local centre
+	if players == 2 then
+		centre = _screen.cx + (EVAL_PANE_W + EVAL_PANE_GAP) * (pn == 1 and -0.5 or 0.5)
+	else
+		centre = _screen.cx - (EVAL_PANE_W + EVAL_PANE_GAP) * 0.5 + w * EVAL_ONE_PLAYER_NUDGE
+	end
+
+	return { x=centre - w/2, y=_screen.cy + EVAL_GRAPH_Y, w=w, h=h }
+end
+
+
+-- Reduces a song's samples to evenly spaced, smoothed points along the graph,
+-- each {f, bpm, cut}, where f is the fraction across and cut marks a point that
+-- begins a new run after a break in the readings.  Returns nil when there is
+-- nothing worth drawing.
+--
+-- The span is the density graph's own: from the chart's first second (or zero,
+-- whichever is lower) to the song's last.  Matching it is what puts a peak in
+-- the line above the busy part of the chart that caused it.
+local function GraphPoints(samples, pn)
+	if #samples < 2 then return nil end
+
+	local song = GAMESTATE:GetCurrentSong()
+	local steps = GAMESTATE:GetCurrentSteps(SIDES[pn])
+	if not song or not steps then return nil end
+
+	local first = math.min(steps:GetTimingData():GetElapsedTimeFromBeat(0), 0)
+	local span = song:GetLastSecond() - first
+	if span <= 0 then return nil end
+
+	-- Readings from before the song starts are dropped, even though the scale
+	-- still runs from `first`.  The density graph skips every measure until a
+	-- step occurs and the lifebar is offset to match, so a line running through
+	-- the intro would be the only thing in the box claiming that time existed.
+	--
+	-- The cut is the start of the *measure* holding the first note, not the note
+	-- itself: SL-Histogram.lua plots each measure at GetElapsedTimeFromBeat of
+	-- its own first beat, so cutting at the note leaves the line starting up to
+	-- one measure right of the bars.
+	--
+	-- Song-level, so it is the earliest note across every difficulty rather than
+	-- this chart's own: on a song whose Beginner starts before its Expert, playing
+	-- Expert draws a line reaching back into an intro this chart does not have.
+	-- It is the same figure Graphs.lua offsets the lifebar by, so the two at least
+	-- start together.  steps:GetNpsPerMeasure() would be exact, being what the
+	-- histogram itself is built from; it is untried, an earlier attempt having
+	-- failed for an unrelated reason.
+	local timing = steps:GetTimingData()
+	local firstBeat = timing:GetBeatFromElapsedTime(song:GetFirstSecond())
+	local playFrom = timing:GetElapsedTimeFromBeat(math.floor(firstBeat / 4) * 4)
+
+	local sum, count, when, opened, closed = {}, {}, {}, {}, {}
+	for i = 1, HR_GRAPH_POINTS do sum[i], count[i], when[i] = 0, 0, 0 end
+	for _, sample in ipairs(samples) do
+		local f = (sample.t - first) / span
+		if sample.t >= playFrom and f >= 0 and f <= 1 then
+			local i = math.min(HR_GRAPH_POINTS, math.floor(f * HR_GRAPH_POINTS) + 1)
+			sum[i], count[i] = sum[i] + sample.bpm, count[i] + 1
+			when[i] = when[i] + f
+			if opened[i] == nil then opened[i] = sample.t end
+			closed[i] = sample.t
+		end
+	end
+
+	-- An empty bucket is a gap in the readings, not a reading of zero, so it is
+	-- dropped rather than dragging the line to the floor.  Whether it also breaks
+	-- the line is decided on the samples' own clock: an empty bucket can just be
+	-- bucket boundaries falling awkwardly on a short song.
+	local raw, last = {}, nil
+	for i = 1, HR_GRAPH_POINTS do
+		if count[i] > 0 then
+			raw[#raw+1] = {
+				-- The mean position of this bucket's own samples, not the bucket's
+				-- centre: centres inset the line by half a bucket at each end,
+				-- which reads as the line failing to reach the graph it sits on.
+				f = when[i] / count[i],
+				bpm = sum[i] / count[i],
+				cut = last ~= nil and (opened[i] - last) > HR_GRAPH_GAP,
+			}
+			last = closed[i]
+		end
+	end
+	if #raw < 2 then return nil end
+	if HR_GRAPH_SMOOTH < 2 then return raw end
+
+	-- The moving average does not reach across a break: averaging the far side of
+	-- a gap into the near side would invent a slope out of missing data.
+	local half = math.floor(HR_GRAPH_SMOOTH / 2)
+	local out = {}
+	for i = 1, #raw do
+		local total, n = 0, 0
+		for j = i, math.max(1, i - half), -1 do
+			if j < i and raw[j+1].cut then break end
+			total, n = total + raw[j].bpm, n + 1
+		end
+		for j = i + 1, math.min(#raw, i + half) do
+			if raw[j].cut then break end
+			total, n = total + raw[j].bpm, n + 1
+		end
+		out[i] = { f=raw[i].f, bpm=total / n, cut=raw[i].cut }
+	end
+	return out
+end
+
+
+-- Everything the evaluation graph needs for one player, or nil when that side
+-- has nothing to show.  The scale comes from the readings themselves, so the
+-- labels are what say whether this was a warmup or a wall.
+local function EvalPlot(pn)
+	local samples = state[pn].samples
+	local pts = GraphPoints(samples, pn)
+	if pts == nil then return nil end
+
+	-- From the plotted points rather than the raw samples, so the labels describe
+	-- the line that is actually drawn: anything trimmed off the intro is not part
+	-- of what the reader can see.
+	local lo, hi, sum = pts[1].bpm, pts[1].bpm, 0
+	for _, p in ipairs(pts) do
+		lo = math.min(lo, p.bpm)
+		hi = math.max(hi, p.bpm)
+		sum = sum + p.bpm
+	end
+	local mean = sum / #pts
+
+	-- Headroom, so the peak does not sit on the box's edge. A flat song would
+	-- divide by zero otherwise, so give it an arbitrary band to sit in.
+	local pad = (hi - lo) * HR_GRAPH_PAD
+	if pad <= 0 then pad = 1 end
+	local bottom, top = lo - pad, hi + pad
+
+	local box = EvalGraphBox(pn)
+	local function yOf(bpm)
+		return box.y + box.h * (1 - (bpm - bottom) / (top - bottom))
+	end
+
+	local verts = {}
+	local function emit(x, y, alpha)
+		local c = { HR_GRAPH_COLOR[1], HR_GRAPH_COLOR[2], HR_GRAPH_COLOR[3], alpha }
+		verts[#verts+1] = { {x, y - HR_GRAPH_THICKNESS, 0}, c }
+		verts[#verts+1] = { {x, y + HR_GRAPH_THICKNESS, 0}, c }
+	end
+
+	local px, py
+	for _, p in ipairs(pts) do
+		local x, y = box.x + p.f * box.w, yOf(p.bpm)
+		-- A quad strip is one continuous run, so a break is drawn by bridging it
+		-- with fully transparent quads rather than by starting a second actor.
+		if p.cut and px ~= nil then
+			emit(px, py, 0)
+			emit(x, y, 0)
+		end
+		emit(x, y, HR_GRAPH_COLOR[4])
+		px, py = x, y
+	end
+
+	-- Min and max define the scale and always show. The mean is the first thing
+	-- to go when there is no room for it.
+	local labels = {
+		{ y=yOf(hi), text=string.format("%d", math.floor(hi + 0.5)) },
+		{ y=yOf(lo), text=string.format("%d", math.floor(lo + 0.5)) },
+	}
+	-- The mean's label is pushed off its true height when it would collide,
+	-- rather than dropped: the rule across the box is what says where the mean
+	-- actually sits, so the number only has to stay readable and adjacent. It is
+	-- always pushed inward, away from whichever of min or max it was crowding.
+	local meanY = yOf(mean)
+	local gap = CAP_HEIGHT * HR_LABEL_ZOOM + HR_LABEL_PAD * 2
+	local labelY = meanY
+	if labelY - labels[1].y < gap then labelY = labels[1].y + gap end
+	if labels[2].y - labelY < gap then labelY = labels[2].y - gap end
+
+	-- Unless min and max are themselves so close that there is no room between.
+	if labels[2].y - labels[1].y >= gap * 2 then
+		labels[#labels+1] = { y=labelY, text=string.format("%d", math.floor(mean + 0.5)) }
+	end
+
+	-- The rule is drawn whether or not the label beside it survived, since it is
+	-- the reference the line is read against.
+	return { box=box, verts=verts, labels=labels, meanY=meanY }
+end
+
+
+-- One reading written at the height it sits at, backed by a quad because the
+-- density bars run underneath.
+local function EvalLabel(index)
+	return Def.ActorFrame{
+		PlotCommand=function(self, plot)
+			local label = plot.labels[index]
+			self:visible(label ~= nil)
+			if label == nil then return end
+			self:xy(plot.box.x + HR_LABEL_INSET, label.y)
+			self:playcommand("Write", label)
+		end,
+
+		Def.Quad{
+			InitCommand=function(self) self:halign(0):diffuse(HR_LABEL_BG) end,
+			WriteCommand=function(self, label)
+				local w = DIGIT_WIDTH * HR_LABEL_ZOOM * #label.text
+				self:zoomto(w + HR_LABEL_PAD * 2, CAP_HEIGHT * HR_LABEL_ZOOM + HR_LABEL_PAD * 2)
+			end,
+		},
+
+		LoadFont("Wendy/_wendy monospace numbers")..{
+			InitCommand=function(self)
+				self:halign(0):valign(0.5):zoom(HR_LABEL_ZOOM):diffuse(HR_LABEL_COLOR)
+			end,
+			WriteCommand=function(self, label)
+				-- Same ink correction the panel readout needs; see INK_OFFSET.
+				self:settext(label.text)
+				self:y(-INK_OFFSET * HR_LABEL_ZOOM)
+				self:x(HR_LABEL_PAD)
+			end,
+		},
+	}
+end
+
+
+-- The corner heart.  It reads the same files the panels do, so it reports what
+-- would actually be drawn rather than what gotempo thinks it is connected to: a
+-- strap that is connected but sending nothing leaves this dim, which is the
+-- honest answer.
+local function StatusHeart()
+	local live, pulseAt = false, nil
+
+	return Def.ActorFrame{
+		InitCommand=function(self)
+			self:xy(_screen.w - STATUS_HEART_MARGIN - STATUS_HEART_SIZE / 2,
+			        _screen.h - STATUS_HEART_MARGIN - STATUS_HEART_SIZE / 2)
+			self:visible(STATUS_HEART)
+		end,
+		ModuleCommand=function(self)
+			self:stoptweening()
+			if STATUS_HEART then self:queuecommand("Beat") end
+		end,
+		BeatCommand=function(self)
+			local bpm = ReadHeartRate(HR_FILES[1]) or ReadHeartRate(HR_FILES[2])
+			live = bpm ~= nil
+
+			if bpm == nil then
+				self:stopeffect()
+				pulseAt = nil
+			elseif PULSE and bpm ~= pulseAt then
+				self:pulse():effectmagnitude(1, PULSE_MAGNITUDE, 0):effectperiod(60 / bpm)
+				pulseAt = bpm
+			end
+
+			self:GetChild("Icon"):diffuse(live and STATUS_HEART_LIVE or STATUS_HEART_DEAD)
+			self:sleep(POLL_SECONDS):queuecommand("Beat")
+		end,
+
+		Def.Sprite{
+			Name="Icon",
+			Texture=ICON_TEXTURE,
+			InitCommand=function(self) self:zoomto(STATUS_HEART_SIZE, STATUS_HEART_SIZE) end,
+		},
+	}
+end
+
+
+local function EvalGraph()
+	local af = Def.ActorFrame{}
+	for pn = 1, 2 do
+		af[#af+1] = Def.ActorFrame{
+			ModuleCommand=function(self)
+				-- Nothing to say when this side did not play, or wore no strap.
+				local plot = nil
+				if HR_GRAPH and GAMESTATE:IsSideJoined(SIDES[pn]) then
+					plot = EvalPlot(pn)
+				end
+				self:visible(plot ~= nil)
+				if plot ~= nil then self:playcommand("Plot", plot) end
+			end,
+
+			Def.Quad{
+				InitCommand=function(self) self:halign(0):diffuse(HR_MEAN_LINE) end,
+				PlotCommand=function(self, plot)
+					self:xy(plot.box.x, plot.meanY):zoomto(plot.box.w, HR_MEAN_LINE_H)
+				end,
+			},
+
+			Def.ActorMultiVertex{
+				InitCommand=function(self)
+					self:SetDrawState({Mode="DrawMode_QuadStrip"})
+				end,
+				PlotCommand=function(self, plot)
+					self:SetNumVertices(#plot.verts):SetVertices(plot.verts)
+				end,
+			},
+
+			EvalLabel(1),
+			EvalLabel(2),
+			EvalLabel(3),
+		}
+	end
+	return af
+end
+
+
 local t = {}
 
 -- The outer frame owns the poll for both panels: one timer reading both files
@@ -555,9 +941,28 @@ t.ScreenGameplay = Def.ActorFrame{
 
 	TickCommand=function(self)
 		WritePlayers()
+		local second = GAMESTATE:GetCurMusicSeconds()
 		for pn = 1, 2 do
 			local s = state[pn]
-			s.bpm = (s.geo ~= nil) and ReadHeartRate(s.file) or nil
+			local stamp
+			s.bpm, stamp = nil, nil
+			if s.geo ~= nil then s.bpm, stamp = ReadHeartRate(s.file) end
+
+			-- A stamp that has not moved means no reading arrived since the last
+			-- poll. The panel keeps showing the last value, which is deliberate
+			-- and harmless for a second or two on screen; the graph is a record,
+			-- so it holds a stricter line and simply stops collecting.
+			if stamp ~= nil and stamp == s.stamp then
+				s.repeats = s.repeats + 1
+			else
+				s.repeats = 0
+			end
+			s.stamp = stamp
+
+			local fresh = s.bpm ~= nil and s.repeats < HR_STALE_POLLS
+			if HR_GRAPH and fresh and second ~= nil then
+				s.samples[#s.samples+1] = { t=second, bpm=s.bpm }
+			end
 		end
 		self:playcommand("Refresh")
 		self:sleep(POLL_SECONDS):queuecommand("Tick")
@@ -585,10 +990,21 @@ local function PublishOnly()
 	}
 end
 
-t.ScreenSelectMusic = PublishOnly()
+t.ScreenSelectMusic = Def.ActorFrame{ PublishOnly(), StatusHeart() }
+for _, screen in ipairs(STATUS_HEART_SCREENS) do
+	if t[screen] == nil then t[screen] = StatusHeart() end
+end
 t.ScreenEvaluation = PublishOnly()
-t.ScreenEvaluationStage = PublishOnly()
 t.ScreenEvaluationNonstop = PublishOnly()
 t.ScreenEvaluationSummary = PublishOnly()
+
+-- The normal per-song evaluation screen gets the heart-rate line as well as the
+-- publish loop.  Course modes are left alone: their density graph is assembled
+-- from several songs by a different code path, so one song's samples would not
+-- line up with it.
+t.ScreenEvaluationStage = Def.ActorFrame{
+	PublishOnly(),
+	EvalGraph(),
+}
 
 return t
