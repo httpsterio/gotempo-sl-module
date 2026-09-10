@@ -129,10 +129,15 @@ local HR_STALE_POLLS = 3
 local HR_GRAPH_GAP = 3			-- seconds of silence that break the line
 
 -- A heart in the corner of every other screen, so the wait for a strap to
--- connect is visible somewhere other than the tray.  Lit and beating when a
--- reading is arriving on either side, dim when not: connecting can take a good
--- few seconds and a strap that is asleep or off skin never connects at all,
--- which is otherwise indistinguishable from the module being broken.
+-- connect is visible somewhere other than the tray.  Lit and beating when that
+-- side's reading is arriving, dim when not: connecting can take a good few
+-- seconds and a strap that is asleep or off skin never connects at all, which
+-- is otherwise indistinguishable from the module being broken.
+--
+-- One per side, P1 bottom left and P2 bottom right, so two straps can be told
+-- apart at a glance.  P1's is always up; P2's would be permanent clutter on a
+-- one-strap setup, so it appears only once that side has joined or has a
+-- reading of its own.
 local STATUS_HEART = true
 local STATUS_HEART_SIZE = 14
 local STATUS_HEART_MARGIN = 8		-- from the screen corner
@@ -851,22 +856,25 @@ end
 -- would actually be drawn rather than what gotempo thinks it is connected to: a
 -- strap that is connected but sending nothing leaves this dim, which is the
 -- honest answer.
-local function StatusHeart()
+local function StatusHeart(pn)
 	local live, pulseAt = false, nil
 
 	return Def.ActorFrame{
 		InitCommand=function(self)
-			self:xy(_screen.w - STATUS_HEART_MARGIN - STATUS_HEART_SIZE / 2,
+			local inset = STATUS_HEART_MARGIN + STATUS_HEART_SIZE / 2
+			self:xy(pn == 1 and inset or _screen.w - inset,
 			        _screen.h - STATUS_HEART_MARGIN - STATUS_HEART_SIZE / 2)
-			self:visible(STATUS_HEART)
+			-- Shown from the first poll on, once there is something to report.
+			self:visible(false)
 		end,
 		ModuleCommand=function(self)
 			self:stoptweening()
 			if STATUS_HEART then self:queuecommand("Beat") end
 		end,
 		BeatCommand=function(self)
-			local bpm = ReadHeartRate(HR_FILES[1]) or ReadHeartRate(HR_FILES[2])
+			local bpm = ReadHeartRate(HR_FILES[pn])
 			live = bpm ~= nil
+			self:visible(pn == 1 or live or GAMESTATE:IsSideJoined(SIDES[pn]))
 
 			if bpm == nil then
 				self:stopeffect()
@@ -990,9 +998,13 @@ local function PublishOnly()
 	}
 end
 
-t.ScreenSelectMusic = Def.ActorFrame{ PublishOnly(), StatusHeart() }
+local function StatusHearts()
+	return Def.ActorFrame{ StatusHeart(1), StatusHeart(2) }
+end
+
+t.ScreenSelectMusic = Def.ActorFrame{ PublishOnly(), StatusHearts() }
 for _, screen in ipairs(STATUS_HEART_SCREENS) do
-	if t[screen] == nil then t[screen] = StatusHeart() end
+	if t[screen] == nil then t[screen] = StatusHearts() end
 end
 t.ScreenEvaluation = PublishOnly()
 t.ScreenEvaluationNonstop = PublishOnly()
