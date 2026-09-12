@@ -98,7 +98,7 @@ local HR_GRAPH = true
 local HR_GRAPH_POINTS = 64
 local HR_GRAPH_SMOOTH = 1		-- moving-average window, in points; 1 disables
 local HR_GRAPH_PAD = 0.1		-- headroom above the peak and below the trough
-local HR_GRAPH_THICKNESS = 1.5		-- half-height of the drawn ribbon
+local HR_GRAPH_THICKNESS = 1.5		-- half-width of the drawn ribbon, across the line
 local HR_GRAPH_COLOR = { 1, 0.31, 0.64, 1 }	-- pink, distinct from the lifebar and the scatter dots
 
 -- The min, max and mean readings, written up the right-hand edge at the height
@@ -770,24 +770,77 @@ local function EvalPlot(pn)
 		return box.y + box.h * (1 - (bpm - bottom) / (top - bottom))
 	end
 
-	local verts = {}
-	local function emit(x, y, alpha)
-		local c = { HR_GRAPH_COLOR[1], HR_GRAPH_COLOR[2], HR_GRAPH_COLOR[3], alpha }
-		verts[#verts+1] = { {x, y - HR_GRAPH_THICKNESS, 0}, c }
-		verts[#verts+1] = { {x, y + HR_GRAPH_THICKNESS, 0}, c }
+	-- Ribbon geometry.  Offsetting each point straight up and down gives the
+	-- strip a constant *vertical* extent, so what you see is 2*T*cos(slope):
+	-- full width where the line is flat, a hairline where it climbs.  Offset
+	-- along the vertex normal instead, lengthened at each join by 1/cos of the
+	-- half-angle (a mitre) so consecutive quads meet flush rather than leaving
+	-- a notch on the outside of every bend.
+	local function segNormal(a, b)
+		local dx, dy = b.x - a.x, b.y - a.y
+		local len = math.sqrt(dx * dx + dy * dy)
+		if len == 0 then return nil end
+		return -dy / len, dx / len
 	end
 
-	local px, py
+	-- x rises across the whole plot, so every segment normal points the same
+	-- way and the strip cannot fold over on itself.
+	local function offsets(run)
+		for i, p in ipairs(run) do
+			local ax, ay, bx, by
+			if i > 1 then ax, ay = segNormal(run[i - 1], p) end
+			if i < #run then bx, by = segNormal(p, run[i + 1]) end
+
+			local nx, ny = ax or bx, ay or by
+			if ax and bx then
+				nx, ny = ax + bx, ay + by
+				local len = math.sqrt(nx * nx + ny * ny)
+				if len == 0 then
+					nx, ny = ax, ay
+				else
+					nx, ny = nx / len, ny / len
+					-- Capped, or a hairpin would throw a spike across the box.
+					local d = math.max(nx * ax + ny * ay, 0.25)
+					nx, ny = nx / d, ny / d
+				end
+			end
+			-- A single point with no neighbour has no direction to be normal
+			-- to; up and down is as good as anything.
+			p.nx = (nx or 0) * HR_GRAPH_THICKNESS
+			p.ny = (ny or 1) * HR_GRAPH_THICKNESS
+		end
+	end
+
+	local verts = {}
+	local function emit(p, alpha)
+		local c = { HR_GRAPH_COLOR[1], HR_GRAPH_COLOR[2], HR_GRAPH_COLOR[3], alpha }
+		verts[#verts+1] = { {p.x - p.nx, p.y - p.ny, 0}, c }
+		verts[#verts+1] = { {p.x + p.nx, p.y + p.ny, 0}, c }
+	end
+
+	-- Split at the gaps before measuring anything: a mitre is the average of the
+	-- two segments meeting at a point, and the point across a gap is not one of
+	-- them.
+	local runs, cur = {}, {}
 	for _, p in ipairs(pts) do
-		local x, y = box.x + p.f * box.w, yOf(p.bpm)
+		if p.cut and #cur > 0 then
+			runs[#runs+1] = cur
+			cur = {}
+		end
+		cur[#cur+1] = { x = box.x + p.f * box.w, y = yOf(p.bpm) }
+	end
+	if #cur > 0 then runs[#runs+1] = cur end
+
+	for i, run in ipairs(runs) do
+		offsets(run)
 		-- A quad strip is one continuous run, so a break is drawn by bridging it
 		-- with fully transparent quads rather than by starting a second actor.
-		if p.cut and px ~= nil then
-			emit(px, py, 0)
-			emit(x, y, 0)
+		if i > 1 then
+			local prev = runs[i - 1]
+			emit(prev[#prev], 0)
+			emit(run[1], 0)
 		end
-		emit(x, y, HR_GRAPH_COLOR[4])
-		px, py = x, y
+		for _, p in ipairs(run) do emit(p, HR_GRAPH_COLOR[4]) end
 	end
 
 	-- Min and max define the scale and always show. The mean is the first thing
