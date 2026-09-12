@@ -10,48 +10,34 @@ to the strap and writes the readings to a file. This module only reads that file
 
 ## Setup
 
-1. Download [gotempo](https://github.com/httpsterio/gotempo/releases/latest) and run it once. It
-   writes a default config and quits cleanly from the tray.
+1. Pair the strap to the machine, outside ITGmania.
+   - Linux: `bluetoothctl`, then `pair` and `trust`
+   - Windows: Settings → Bluetooth & devices
+2. Download [gotempo](https://github.com/httpsterio/gotempo/releases/latest) and run it. It writes a default config. Quit it from the tray.
+3. Copy `gotempo.lua` and the `gotempo/` folder into the `Modules/` folder of the theme you play.
+   - Linux: `~/.itgmania/Themes/Simply Love/Modules/`
+   - Windows: `%APPDATA%\ITGmania\Themes\Simply Love\Modules\`
+   - macOS: `~/Library/Application Support/ITGmania/Themes/Simply Love/Modules/`
 
-2. Close gotempo, then open its config:
+   `gotempo.lua` goes directly in `Modules/`, not in a subfolder. Do not rename `gotempo/heart (mipmaps).png`.
+4. Open the config and set `itgmania_module` to the full path of the copy you just made.
+   - Linux: `~/.config/gotempo/config.json`
+   - Windows: `%APPDATA%\gotempo\config.json`
 
-   - Linux — `~/.config/gotempo/config.json`
-   - Windows — `%APPDATA%\gotempo\config.json`
-
-3. Copy `gotempo.lua` and the `gotempo/` folder into your theme's `Modules/` folder. Either the
-   installed theme or your user one works, as long as it is the theme you actually play:
-
-   - Linux — `~/.itgmania/Themes/Simply Love/Modules/`
-   - Windows — `%APPDATA%\ITGmania\Themes\Simply Love\Modules\`
-   - macOS — `~/Library/Application Support/ITGmania/Themes/Simply Love/Modules/`
-
-   The `.lua` has to sit directly in `Modules/`, not in a subfolder: the loader lists that folder
-   without recursing. Keep the parentheses in `gotempo/heart (mipmaps).png`, they are a StepMania
-   filename hint for mipmapping.
-
-4. Set `itgmania_module` in the config to the full path of the `gotempo.lua` you just copied:
-
-   ```json
+```json
    "itgmania_module": "/home/you/.itgmania/Themes/Simply Love/Modules/gotempo.lua"
-   ```
+```
+5. Start gotempo, then start ITGmania.
+6. On the song wheel press Select+Start. Go to Advanced → gotempo, pick your strap, choose Save and exit.
+7. Put the strap on. The heart in the corner lights up when readings arrive. Connecting takes a few seconds, longer if the electrodes are dry.
 
-   Point it at the copy inside the theme you play. A `gotempo.lua` in some other theme's folder is
-   a real file that the running game never reads, and nothing will tell you.
-
-5. Pair the strap to the machine once, outside ITGmania. On Linux that is `bluetoothctl` (`pair`,
-   then `trust`); on Windows, Settings → Bluetooth & devices.
-
-6. Start gotempo, then ITGmania. On the song wheel, open the sort menu (**Select+Start**) and go to
-   **Advanced → gotempo**. Pick your strap from the list and choose **Save and exit**.
-
-7. Put the strap on and wait. Connecting takes a few seconds, sometimes longer if the electrodes
-   are dry. The heart in the corner lights up when readings arrive.
-
-Steps 1, 2 and 4 collapse into one command if you would rather not edit JSON:
+Steps 2 and 4 in one command:
 
 ```
 gotempo --itgmania-module "~/.itgmania/Themes/Simply Love/Modules/gotempo.lua"
 ```
+
+Quit from the tray afterwards, then carry on from step 3.
 
 ## Data
 
