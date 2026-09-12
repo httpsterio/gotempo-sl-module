@@ -128,6 +128,13 @@ local HR_MEAN_LINE_H = 0.7
 local HR_STALE_POLLS = 3
 local HR_GRAPH_GAP = 3			-- seconds of silence that break the line
 
+-- The line is drawn over the density graph, so it can sit on top of the timing
+-- dots a player wants to read.  This folds it away at the evaluation screen and
+-- brings it back, per side, for as long as the game is running.  Deliberately
+-- not MenuUp: on a pad that is part of the theme's favourite-song code, and the
+-- line would flicker while somebody entered it.
+local HR_GRAPH_TOGGLE = "MenuDown"
+
 -- A heart in the corner of every other screen, so the wait for a strap to
 -- connect is visible somewhere other than the tray.  Lit and beating when that
 -- side's reading is arriving, dim when not: connecting can take a good few
@@ -165,6 +172,16 @@ local EVAL_GRAPH_Y = 124		-- below _screen.cy
 local PROFILE_INI = "gotempo.ini"
 local PROFILE_SECTION = "gotempo"
 local PROFILE_KEY = "Device"
+
+-- Optional appearance keys in the same section, so a player can make their own
+-- line legible against whatever they play on.  Both fall back to the values
+-- above when missing, empty or malformed:
+--
+--	Color=#FF4FA3		the line, its labels and the mean rule
+--	Thickness=1.4		multiplies HR_GRAPH_THICKNESS, at every slope
+local PROFILE_KEY_COLOR = "Color"
+local PROFILE_KEY_THICKNESS = "Thickness"
+local HR_THICKNESS_MAX = 4		-- a typo should not fill the box
 
 -- Paint the panel background a bright colour and keep it visible even with no
 -- reading, so you can see exactly what space it occupies while positioning it.
@@ -411,6 +428,67 @@ local function ProfileDevice(pn)
 	if type(mac) ~= "string" or #mac == 0 then return nil end
 	return mac
 end
+
+
+-- A profile's colour, as hex, validated before color() sees it: a typo in a
+-- file gotempo never writes should fall back, not take the graph down.
+local function ParseColor(text)
+	if type(text) ~= "string" then return nil end
+	local hex = text:match("^%s*#?(%x+)%s*$")
+	if hex == nil or (#hex ~= 6 and #hex ~= 8) then return nil end
+	return color("#" .. hex)
+end
+
+
+-- A profile's line thickness, as a multiplier. Zero or negative would erase the
+-- line, which the toggle already does better.
+local function ParseThickness(text)
+	local n = tonumber(text)
+	if n == nil or n <= 0 or n > HR_THICKNESS_MAX then return nil end
+	return n
+end
+
+
+-- Appearance settings for one side.  ProfileDevice re-reads the ini every second
+-- because the MAC is what gotempo acts on and it must stay current; these cannot
+-- change while a profile is loaded, so they are parsed once and kept.
+--
+-- Cached against the profile directory rather than cleared on a screen change:
+-- a different player is a different directory and misses on its own, so the
+-- cache cannot outlive the profile it was read from no matter what order the
+-- actors below happen to run in.
+local styleCache = {}
+
+local function ProfileStyle(pn)
+	local dir = nil
+	if PROFILEMAN ~= nil and IniFile ~= nil then
+		dir = PROFILEMAN:GetProfileDir(PROFILE_SLOTS[pn])
+		if dir ~= nil and #dir == 0 then dir = nil end
+	end
+
+	local hit = styleCache[pn]
+	if hit ~= nil and hit.dir == dir then return hit.style end
+
+	local style = { color = HR_GRAPH_COLOR, thickness = HR_GRAPH_THICKNESS }
+	if dir ~= nil then
+		local contents = IniFile.ReadFile(dir .. PROFILE_INI)
+		local section = contents and contents[PROFILE_SECTION]
+		if section ~= nil then
+			style.color = ParseColor(section[PROFILE_KEY_COLOR]) or style.color
+			local scale = ParseThickness(section[PROFILE_KEY_THICKNESS])
+			if scale ~= nil then style.thickness = HR_GRAPH_THICKNESS * scale end
+		end
+	end
+
+	styleCache[pn] = { dir = dir, style = style }
+	return style
+end
+
+
+-- Whether each side's line is drawn, toggled with HR_GRAPH_TOGGLE.  Module-level
+-- so the choice survives the next song rather than having to be made again on
+-- every evaluation screen.
+local graphShown = { true, true }
 
 
 -- Publishes who is playing.  Called on every tick rather than on screen entry:
@@ -748,6 +826,12 @@ local function EvalPlot(pn)
 	local pts = GraphPoints(samples, pn)
 	if pts == nil then return nil end
 
+	-- This player's own look, or the defaults. Thickness is one number feeding
+	-- the mitre below, so a profile's multiplier holds at every slope rather
+	-- than only on the flat.
+	local style = ProfileStyle(pn)
+	local lineColor, thickness = style.color, style.thickness
+
 	-- From the plotted points rather than the raw samples, so the labels describe
 	-- the line that is actually drawn: anything trimmed off the intro is not part
 	-- of what the reader can see.
@@ -806,14 +890,14 @@ local function EvalPlot(pn)
 			end
 			-- A single point with no neighbour has no direction to be normal
 			-- to; up and down is as good as anything.
-			p.nx = (nx or 0) * HR_GRAPH_THICKNESS
-			p.ny = (ny or 1) * HR_GRAPH_THICKNESS
+			p.nx = (nx or 0) * thickness
+			p.ny = (ny or 1) * thickness
 		end
 	end
 
 	local verts = {}
 	local function emit(p, alpha)
-		local c = { HR_GRAPH_COLOR[1], HR_GRAPH_COLOR[2], HR_GRAPH_COLOR[3], alpha }
+		local c = { lineColor[1], lineColor[2], lineColor[3], alpha }
 		verts[#verts+1] = { {p.x - p.nx, p.y - p.ny, 0}, c }
 		verts[#verts+1] = { {p.x + p.nx, p.y + p.ny, 0}, c }
 	end
@@ -840,14 +924,14 @@ local function EvalPlot(pn)
 			emit(prev[#prev], 0)
 			emit(run[1], 0)
 		end
-		for _, p in ipairs(run) do emit(p, HR_GRAPH_COLOR[4]) end
+		for _, p in ipairs(run) do emit(p, lineColor[4]) end
 	end
 
 	-- Min and max define the scale and always show. The mean is the first thing
 	-- to go when there is no room for it.
 	local labels = {
-		{ y=yOf(hi), text=string.format("%d", math.floor(hi + 0.5)) },
-		{ y=yOf(lo), text=string.format("%d", math.floor(lo + 0.5)) },
+		{ y=yOf(hi), text=string.format("%d", math.floor(hi + 0.5)), color=lineColor },
+		{ y=yOf(lo), text=string.format("%d", math.floor(lo + 0.5)), color=lineColor },
 	}
 	-- The mean's label is pushed off its true height when it would collide,
 	-- rather than dropped: the rule across the box is what says where the mean
@@ -861,12 +945,15 @@ local function EvalPlot(pn)
 
 	-- Unless min and max are themselves so close that there is no room between.
 	if labels[2].y - labels[1].y >= gap * 2 then
-		labels[#labels+1] = { y=labelY, text=string.format("%d", math.floor(mean + 0.5)) }
+		labels[#labels+1] = { y=labelY, text=string.format("%d", math.floor(mean + 0.5)), color=lineColor }
 	end
 
 	-- The rule is drawn whether or not the label beside it survived, since it is
 	-- the reference the line is read against.
-	return { box=box, verts=verts, labels=labels, meanY=meanY }
+	-- The mean rule takes the line's hue at the default's alpha, so one profile
+	-- key drives all three pieces without naming each.
+	local meanColor = { lineColor[1], lineColor[2], lineColor[3], HR_MEAN_LINE[4] }
+	return { box=box, verts=verts, labels=labels, meanY=meanY, meanColor=meanColor }
 end
 
 
@@ -896,6 +983,7 @@ local function EvalLabel(index)
 			end,
 			WriteCommand=function(self, label)
 				-- Same ink correction the panel readout needs; see INK_OFFSET.
+				self:diffuse(label.color or HR_LABEL_COLOR)
 				self:settext(label.text)
 				self:y(-INK_OFFSET * HR_LABEL_ZOOM)
 				self:x(HR_LABEL_PAD)
@@ -950,9 +1038,49 @@ local function StatusHeart(pn)
 end
 
 
-local function EvalGraph()
-	local af = Def.ActorFrame{}
+-- Which side pressed, or nil for an event that belongs to neither.
+local function EventSide(event)
 	for pn = 1, 2 do
+		if tostring(event.PlayerNumber) == SIDES[pn] then return pn end
+	end
+	return nil
+end
+
+
+-- The evaluation screen takes input callbacks (the theme registers four of its
+-- own), and the only menu buttons it consumes are left and right, for cycling
+-- the panes.  So a module can listen without touching a theme file and without
+-- taking a button out from under anything.  The callback returns false, like
+-- the theme's, so the screen still sees the press.
+local function WatchToggle()
+	local screen = SCREENMAN:GetTopScreen()
+	if screen == nil or screen.AddInputCallback == nil then return end
+
+	screen:AddInputCallback(function(event)
+		if event == nil or event.type ~= "InputEventType_FirstPress" then return false end
+		if event.GameButton ~= HR_GRAPH_TOGGLE then return false end
+
+		local pn = EventSide(event)
+		if pn == nil then return false end
+
+		graphShown[pn] = not graphShown[pn]
+		-- A broadcast rather than a playcommand: this has to reach actors two
+		-- frames down, and only messages are guaranteed to recurse.
+		MESSAGEMAN:Broadcast("GotempoGraphToggled")
+		return false
+	end)
+end
+
+
+local function EvalGraph()
+	local af = Def.ActorFrame{
+		ModuleCommand=function(self) WatchToggle() end,
+	}
+	for pn = 1, 2 do
+		-- Whether this side has anything to draw at all, which the toggle must
+		-- not override: an empty graph stays hidden however often it is pressed.
+		local plotted = false
+
 		af[#af+1] = Def.ActorFrame{
 			ModuleCommand=function(self)
 				-- Nothing to say when this side did not play, or wore no strap.
@@ -960,13 +1088,18 @@ local function EvalGraph()
 				if HR_GRAPH and GAMESTATE:IsSideJoined(SIDES[pn]) then
 					plot = EvalPlot(pn)
 				end
-				self:visible(plot ~= nil)
+				plotted = plot ~= nil
+				self:visible(plotted and graphShown[pn])
 				if plot ~= nil then self:playcommand("Plot", plot) end
+			end,
+			GotempoGraphToggledMessageCommand=function(self)
+				self:visible(plotted and graphShown[pn])
 			end,
 
 			Def.Quad{
 				InitCommand=function(self) self:halign(0):diffuse(HR_MEAN_LINE) end,
 				PlotCommand=function(self, plot)
+					self:diffuse(plot.meanColor or HR_MEAN_LINE)
 					self:xy(plot.box.x, plot.meanY):zoomto(plot.box.w, HR_MEAN_LINE_H)
 				end,
 			},

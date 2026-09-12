@@ -62,15 +62,28 @@ A player can name their own strap in their profile and gotempo follows it while 
 ```ini
 [gotempo]
 Device=24:AC:AC:18:41:CC
+Color=#FF4FA3
+Thickness=1.4
 ```
 
 Pair the strap to the machine once first. Nothing is saved on gotempo's side, so leaving the song
 flow, or quitting the game, hands the straps back to whatever it was set to before.
 
+`Color` and `Thickness` are optional and affect only that player's evaluation graph: the line, its
+labels and the mean rule. `Color` is hex, with or without the `#`, six digits or eight for an
+alpha. `Thickness` multiplies the configured width, capped at 4, and holds at every slope rather
+than only on the flat. Anything missing, empty or malformed falls back to the values in
+`gotempo.lua`, so a typo costs you the setting and not the graph.
+
 ## Evaluation graph
 
 After a song, your heart rate is drawn as a pink line over the density graph, sharing its time
 axis so a peak sits above the part of the chart that caused it. Two players each get their own.
+
+Press **MenuDown** at the evaluation screen to fold the line away and again to bring it back, per
+side, for as long as the game is running. The line is drawn over the density graph, so this is
+there for reading the timing dots underneath. MenuUp is deliberately not used: on a pad it is part
+of Simply Love's favourite-song code.
 
 Samples are kept in memory for one song and thrown away when the next starts; nothing is written
 and nothing accumulates. They are bucketed into `HR_GRAPH_POINTS` evenly spaced points and run
