@@ -1,25 +1,57 @@
 # gotempo — Simply Love heart rate module
 
 Shows your heart rate during gameplay in ITGmania, and draws it over the density graph on the
-evaluation screen afterwards: a heart that beats at your BPM and a
-three-digit readout. With one player it sits in the top corner of the header; with two it
-splits into a panel per player along the bottom edge, either side of the game-mode text.
+evaluation screen afterwards: a heart that beats at your BPM and a three-digit readout. With one
+player it sits in the top corner of the header; with two it splits into a panel per player along
+the bottom edge, either side of the game-mode text.
 
-## Install
+The Bluetooth half is [gotempo](https://github.com/httpsterio/gotempo/), a tray app that connects
+to the strap and writes the readings to a file. This module only reads that file. You need both.
 
-Copy `gotempo.lua` and the `gotempo/` folder into Simply Love's `Modules/` folder, then restart.
-The `.lua` has to sit directly in `Modules/`: the loader lists that folder without recursing and
-keeps only `*.lua`. Everything else this module owns lives in `Modules/gotempo/`.
+## Setup
 
-- Linux — `~/.itgmania/Themes/Simply Love/Modules/`
-- Windows — `%APPDATA%\ITGmania\Themes\Simply Love\Modules\`
-- macOS — `~/Library/Application Support/ITGmania/Themes/Simply Love/Modules/`
+1. Download [gotempo](https://github.com/httpsterio/gotempo/releases/latest) and run it once. It
+   writes a default config and quits cleanly from the tray.
 
-Keep the parentheses in `gotempo/heart (mipmaps).png`; it's a StepMania filename hint for mipmapping.
-With one side joined the panel sits in the header corner opposite your score. With both
-joined the header corners are taken by the two scores, so the panels move to the bottom
-centre instead: that strip is the one part of a two-player screen that keeps its shape
-whatever modifiers are on.
+2. Close gotempo, then open its config:
+
+   - Linux — `~/.config/gotempo/config.json`
+   - Windows — `%APPDATA%\gotempo\config.json`
+
+3. Copy `gotempo.lua` and the `gotempo/` folder into your theme's `Modules/` folder. Either the
+   installed theme or your user one works, as long as it is the theme you actually play:
+
+   - Linux — `~/.itgmania/Themes/Simply Love/Modules/`
+   - Windows — `%APPDATA%\ITGmania\Themes\Simply Love\Modules\`
+   - macOS — `~/Library/Application Support/ITGmania/Themes/Simply Love/Modules/`
+
+   The `.lua` has to sit directly in `Modules/`, not in a subfolder: the loader lists that folder
+   without recursing. Keep the parentheses in `gotempo/heart (mipmaps).png`, they are a StepMania
+   filename hint for mipmapping.
+
+4. Set `itgmania_module` in the config to the full path of the `gotempo.lua` you just copied:
+
+   ```json
+   "itgmania_module": "/home/you/.itgmania/Themes/Simply Love/Modules/gotempo.lua"
+   ```
+
+   Point it at the copy inside the theme you play. A `gotempo.lua` in some other theme's folder is
+   a real file that the running game never reads, and nothing will tell you.
+
+5. Pair the strap to the machine once, outside ITGmania. On Linux that is `bluetoothctl` (`pair`,
+   then `trust`); on Windows, Settings → Bluetooth & devices.
+
+6. Start gotempo, then ITGmania. On the song wheel, open the sort menu (**Select+Start**) and go to
+   **Advanced → gotempo**. Pick your strap from the list and choose **Save and exit**.
+
+7. Put the strap on and wait. Connecting takes a few seconds, sometimes longer if the electrodes
+   are dry. The heart in the corner lights up when readings arrive.
+
+Steps 1, 2 and 4 collapse into one command if you would rather not edit JSON:
+
+```
+gotempo --itgmania-module "~/.itgmania/Themes/Simply Love/Modules/gotempo.lua"
+```
 
 ## Data
 
@@ -35,7 +67,7 @@ hasn't changed, or the panel hides after 60 seconds.
 P2 reads `gotempo/hr-p2.txt`, same format. There is no `hr-p1.txt`, so an existing single-player setup
 keeps working untouched.
 
-It writes one file, `gotempo/players.txt`, which is how gotempo knows who is playing and therefore which
+It writes `gotempo/players.txt`, which is how gotempo knows who is playing and therefore which
 strap to connect for each side. Rewritten once a second on song select, gameplay and evaluation:
 
 ```
@@ -48,11 +80,10 @@ Date and seconds since midnight, then a line per joined side naming that player'
 if they have none. A side with nobody on it gets no line. gotempo releases the straps when the
 stamp stops advancing, which is what covers the game being closed or killed.
 
-[gotempo](https://github.com/httpsterio/gotempo) does this from a Bluetooth strap:
-
-```
-gotempo --itgmania-module "~/.itgmania/Themes/Simply Love/Modules/gotempo.lua"
-```
+The strap picker adds a fourth line, `scan <token>`, while it is open. gotempo answers by scanning
+and writing `gotempo/devices.txt`, which the picker reads and which gotempo blanks again about a
+minute later. This module has no Bluetooth of its own, so asking is the only way it can find out
+what is in range.
 
 ## Profiles
 
@@ -76,13 +107,13 @@ own panel, driven by their own controller, showing their current strap and its l
 ```
 ┌──────────────────────────────┐  ┌──────────────────────────────┐
 │  P1 · http                   │  │  P2 · Sami KB · unsaved      │
-│  ✓ Polar H10 1841CC31        │  │  ✗ No strap selected         │
+│  • Polar H10 1841CC31        │  │  × No strap selected         │
 │    72 bpm                    │  │                              │
 │  ──────────────────────────  │  │  ──────────────────────────  │
-│  ▸ Change strap              │  │  ▸ Choose a strap            │
-│    Remove strap              │  │    Line colour    ◂ FF4FA3 ▸ │
-│    Line colour    ◂ F56C27 ▸ │  │    Line thickness ◂ 1.0 ▸    │
-│    Line thickness ◂ 1.4 ▸    │  │    Save and exit             │
+│  › Change strap              │  │  › Choose a strap            │
+│    Remove strap              │  │    Line colour    ‹ FF4FA3 › │
+│    Line colour    ‹ F56C27 › │  │    Line thickness ‹ 1.0 ›    │
+│    Line thickness ‹ 1.4 ›    │  │    Save and exit             │
 │    Save and exit             │  │    Back without saving       │
 │    Exit                      │  │                              │
 └──────────────────────────────┘  └──────────────────────────────┘
@@ -122,10 +153,17 @@ there for reading the timing dots underneath. MenuUp is deliberately not used: o
 of Simply Love's favourite-song code.
 
 Samples are kept in memory for one song and thrown away when the next starts; nothing is written
-and nothing accumulates. They are bucketed into `HR_GRAPH_POINTS` evenly spaced points and run
-through a short moving average, so the line shows effort rather than sensor jitter. Course modes
-are skipped: their density graph is built from several songs and one song's samples would not line
-up with it.
+and nothing accumulates. They are grouped into `HR_GRAPH_POINTS` buckets by position along the
+song and plotted at each bucket's mean sample time, so the line reaches both ends of the box
+instead of being inset by half a bucket, then run through a short moving average so it shows
+effort rather than sensor jitter.
+
+The scale comes from the readings themselves rather than a fixed range, with `HR_GRAPH_PAD`
+headroom so the peak does not sit on the edge. That is why the min, mean and max labels matter:
+they are what say whether the line was a warmup or a wall.
+
+Course modes are skipped: their density graph is built from several songs and one song's samples
+would not line up with it.
 
 ## Config
 
@@ -181,11 +219,35 @@ position and the heart grows away from them. Enlarging the heart therefore needs
 | `ICON_Y_NUDGE` | `-5` | Heart up |
 | `PULSE` | `true` | Beat at the current BPM |
 | `HR_GRAPH` | `true` | Draw the line on the evaluation screen |
-| `HR_GRAPH_POINTS` | `48` | Points across the graph; raise for detail |
-| `HR_GRAPH_SMOOTH` | `3` | Moving-average window in points; `1` disables |
-| `HR_GRAPH_MIN` / `HR_GRAPH_MAX` | `40` / `200` | BPM at the bottom and top of the box |
-| `HR_GRAPH_THICKNESS` | `1.5` | Half-height of the line |
-| `HR_GRAPH_COLOR` | pink | |
+| `HR_GRAPH_POINTS` | `64` | Points across the graph; raise for detail |
+| `HR_GRAPH_SMOOTH` | `1` | Moving-average window in points; `1` disables |
+| `HR_GRAPH_PAD` | `0.1` | Headroom above and below the range, as a fraction of it |
+| `HR_GRAPH_GAP` | `3` | Seconds of silence that break the line rather than bridging it |
+| `HR_GRAPH_THICKNESS` | `1.5` | Half-width of the line, measured across it. A profile's `Thickness` multiplies this |
+| `HR_GRAPH_COLOR` | pink | Overridden per player by `Color` |
+| `HR_GRAPH_TOGGLE` | `"MenuDown"` | Folds the line away at the evaluation screen |
+| `HR_STALE_POLLS` | `3` | Repeated timestamps before the graph stops collecting |
+| `HR_LABEL_ZOOM` | `0.13` | Min/mean/max label size |
+| `HR_LABEL_INSET` | `1` | Labels in from the box's left edge |
+| `HR_LABEL_PAD` | `2` | Inset around the label text, inside its backing |
+| `HR_LABEL_COLOR` | pink | Overridden per player by `Color` |
+| `HR_LABEL_BG` | black, 0.65 | Backing, since the density bars run underneath |
+| `HR_MEAN_LINE` | pink, half alpha | Rule across the box at the mean |
+| `HR_MEAN_LINE_H` | `0.7` | Its thickness |
+| `EVAL_PANE_W` / `EVAL_PANE_GAP` | `300` / `10` | Simply Love's pane geometry, recomputed here because a module cannot reach into the screen |
+| `EVAL_GRAPH_Y` | `124` | Graph box, below screen centre |
+| `EVAL_ONE_PLAYER_NUDGE` | `0.2541` | One player: the density graph's offset within its pane |
+| `HR_COLOR_CHOICES` | 8 presets | What the picker's **Line colour** row steps through |
+| `HR_THICKNESS_CHOICES` | `0.6` … `2.5` | What **Line thickness** steps through |
+| `HR_THICKNESS_MAX` | `4` | Ceiling on a hand-written `Thickness` |
+| `STATUS_HEART` | `true` | Corner heart on the menu screens |
+| `STATUS_HEART_SIZE` | `14` | |
+| `STATUS_HEART_MARGIN` | `8` | Gap from the screen corner |
+| `STATUS_HEART_LIVE` / `STATUS_HEART_DEAD` | pink / faint white | Reading arriving, or not |
+| `STATUS_HEART_SCREENS` | six menu screens | Where it is drawn |
+| `SORTMENU_TOP` / `SORTMENU_BOTTOM` | `"HR Strap Config"` / `"gotempo"` | The sort menu row. The bottom line is also the key the theme dispatches on |
+| `SCAN_WAIT` | `20` | Seconds the picker waits for gotempo before giving up |
+| `DEVICES_MAX_AGE` | `90` | Seconds before a published strap list is ignored |
 | `PULSE_MAGNITUDE` | `1.15` | Swell per beat |
 | `BG_COLOR` | transparent | |
 | `TEXT_COLOR` | `#ffffff` | |
