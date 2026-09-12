@@ -48,7 +48,6 @@ IniFile = {
 
 picker = { devices = {}, owners = {} }
 side = {}
-styleCache = {}
 
 -- Stubs for the two branches that reach the radio or rebuild the list; the
 -- tests care that Confirm routes to them, not what they then do.
@@ -228,12 +227,18 @@ check(NormalizeHex("#FFF") == nil and NormalizeHex("pink") == nil, "junk is reje
 
 profiles = { { dir = "/p1/", name = "x", ini = { gotempo = { Thickness = 1.4, Color = "#F56C27" } } } }
 PROFILEMAN.GetProfileDir = function(_, _) return "/p1/" end
-styleCache = {}
 local style = ProfileStyle(1)
 check(style.thickness == 1.5 * 1.4, "Thickness multiplies the configured width")
 check(style.colorHex == "#F56C27", "the hex is kept so the picker can show the preset")
 
-styleCache = {}
+-- Read fresh every call. It used to be cached against the profile directory,
+-- which does not change when the picker rewrites that directory's ini -- so a
+-- saved thickness was ignored for the rest of the session.
+profiles[1].ini.gotempo.Thickness = 0.6
+check(ProfileStyle(1).thickness == 1.5 * 0.6, "a saved change is picked up without a restart")
+profiles[1].ini.gotempo.Color = "#13BE74"
+check(ProfileStyle(1).colorHex == "#13BE74", "and so is a saved colour")
+
 profiles[1].ini.gotempo = { Device = "24:AC:AC:18:41:CC" }
 local none = ProfileStyle(1)
 check(none.thickness == 1.5 and none.colorHex == nil, "no settings falls back to the defaults")

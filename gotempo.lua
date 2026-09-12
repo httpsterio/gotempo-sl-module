@@ -486,41 +486,32 @@ local function ParseThickness(text)
 end
 
 
--- Appearance settings for one side.  ProfileDevice re-reads the ini every second
--- because the MAC is what gotempo acts on and it must stay current; these cannot
--- change while a profile is loaded, so they are parsed once and kept.
+-- Appearance settings for one side, read fresh every time.
 --
--- Cached against the profile directory rather than cleared on a screen change:
--- a different player is a different directory and misses on its own, so the
--- cache cannot outlive the profile it was read from no matter what order the
--- actors below happen to run in.
-local styleCache = {}
-
+-- Not cached.  It was, keyed on the profile directory, which looked safe until
+-- the in-game picker started writing that file: the directory does not change
+-- when its contents do, so a saved thickness or colour was ignored for the rest
+-- of the session and both sides drew at the default.  There are only two callers
+-- -- the evaluation graph, once per side per screen, and the picker when it
+-- opens -- so nothing here is hot enough to be worth a cache that can go stale.
+-- ProfileDevice is the one that runs every second, and it is separate.
 local function ProfileStyle(pn)
-	local dir = nil
-	if PROFILEMAN ~= nil and IniFile ~= nil then
-		dir = PROFILEMAN:GetProfileDir(PROFILE_SLOTS[pn])
-		if dir ~= nil and #dir == 0 then dir = nil end
-	end
-
-	local hit = styleCache[pn]
-	if hit ~= nil and hit.dir == dir then return hit.style end
-
 	local style = { color = HR_GRAPH_COLOR, thickness = HR_GRAPH_THICKNESS }
-	if dir ~= nil then
-		local contents = IniFile.ReadFile(dir .. PROFILE_INI)
-		local section = contents and contents[PROFILE_SECTION]
-		if section ~= nil then
-			-- colorHex is kept alongside the parsed colour so the picker can
-			-- show which preset this profile is on without re-reading the file.
-			local hex = NormalizeHex(section[PROFILE_KEY_COLOR])
-			if hex ~= nil then style.color, style.colorHex = color(hex), hex end
-			local scale = ParseThickness(section[PROFILE_KEY_THICKNESS])
-			if scale ~= nil then style.thickness = HR_GRAPH_THICKNESS * scale end
-		end
-	end
+	if PROFILEMAN == nil or IniFile == nil then return style end
 
-	styleCache[pn] = { dir = dir, style = style }
+	local dir = PROFILEMAN:GetProfileDir(PROFILE_SLOTS[pn])
+	if dir == nil or #dir == 0 then return style end
+
+	local contents = IniFile.ReadFile(dir .. PROFILE_INI)
+	local section = contents and contents[PROFILE_SECTION]
+	if section ~= nil then
+		-- colorHex is kept alongside the parsed colour so the picker can show
+		-- which preset this profile is on without re-reading the file.
+		local hex = NormalizeHex(section[PROFILE_KEY_COLOR])
+		if hex ~= nil then style.color, style.colorHex = color(hex), hex end
+		local scale = ParseThickness(section[PROFILE_KEY_THICKNESS])
+		if scale ~= nil then style.thickness = HR_GRAPH_THICKNESS * scale end
+	end
 	return style
 end
 
@@ -1286,18 +1277,31 @@ local PANEL_W = 400
 local PANEL_GAP = 22
 local PANEL_H = 392
 
-local PICKER_BG = color("#0B0F14FF")	-- opaque: a menu you can read the wheel through is not a menu
-local PICKER_RULE = color("#FFFFFF22")
+-- Every colour here is opaque, and the dim variants are mixed against the panel
+-- background by hand rather than left to alpha.  Translucent text is harder to
+-- read than the same colour darkened, in every case, and a whole frame faded out
+-- with diffusealpha is unreadable.
+local PICKER_BG = color("#0B0F14")
+local PICKER_RULE = color("#2B2F33")
 local PICKER_TEXT = color("#E0E0E0")
-local PICKER_DIM = color("#E0E0E0AA")
+local PICKER_DIM = color("#9AA0A4")
 local PICKER_OK = color("#13BE74")
 local PICKER_BAD = color("#D35612")
+
+-- A side that has finished is dimmed, not faded: same hues, darker, still
+-- legible from across the machine so the other player can see it is done.
+local PICKER_DONE = {
+	text = color("#71777B"),
+	dim  = color("#5A6064"),
+	ok   = color("#0E7048"),
+	bad  = color("#7C3510"),
+}
 
 -- A third hue, deliberately.  Green and red are the two status colours and are
 -- the pair most often confused, so the cursor takes neither; the marker and the
 -- bar behind the row mean colour is never carrying it alone anyway.
 local PICKER_SEL = color("#4DB8FF")
-local PICKER_SEL_BAR = color("#4DB8FF33")
+local PICKER_SEL_BAR = color("#183143")	-- the selection blue mixed into the background
 
 -- Every module's actors for a screen are siblings under one frame, so draw order
 -- decides which sits on top and the default is load order, which is the Modules/
@@ -1607,7 +1611,20 @@ end
 
 -- ── what a panel says ───────────────────────────────────────────────────────
 
-local function PanelHeader(st)
+-- The colour a side draws in: its own while it can still act, the dim set once
+-- it is finished.
+local function Ink(st, which)
+	if st ~= nil and st.finished ~= nil and PICKER_DONE[which] ~= nil then
+		return PICKER_DONE[which]
+	end
+	if which == "dim" then return PICKER_DIM end
+	if which == "ok" then return PICKER_OK end
+	if which == "bad" then return PICKER_BAD end
+	return PICKER_TEXT
+end
+
+
+local function PickerPanelHeader(st)
 	local name = "P" .. st.pn
 	if st.profile and PROFILEMAN ~= nil then
 		local profile = PROFILEMAN:GetProfile(SIDES[st.pn])
@@ -1623,12 +1640,12 @@ end
 -- The reading only belongs beside a strap that is actually saved: while a pick
 -- is pending, hr.txt still carries whatever gotempo is connected to now, and
 -- showing that number under a different strap's name would be a lie.
-local function PanelStatus(st)
+local function PickerPanelStatus(st)
 	if not st.profile then
-		return { mark = "✗", text = "No profile loaded", color = PICKER_BAD }
+		return { mark = "×", text = "No profile loaded", ink = "bad" }
 	end
 	if st.device == nil then
-		return { mark = "✗", text = "No strap selected", color = PICKER_BAD }
+		return { mark = "×", text = "No strap selected", ink = "bad" }
 	end
 
 	local name = st.device
@@ -1637,18 +1654,18 @@ local function PanelStatus(st)
 	end
 
 	if st.dirty then
-		return { mark = "●", text = name, color = PICKER_TEXT, sub = "saves on exit" }
+		return { mark = "•", text = name, ink = "text", sub = "saves on exit" }
 	end
 	local bpm = ReadHeartRate(HR_FILES[st.pn])
 	if bpm ~= nil then
-		return { mark = "✓", text = name, color = PICKER_OK, sub = bpm .. " bpm" }
+		return { mark = "•", text = name, ink = "ok", sub = bpm .. " bpm" }
 	end
-	return { mark = "◦", text = name, color = PICKER_DIM, sub = "connecting…" }
+	return { mark = "·", text = name, ink = "dim", sub = "connecting…" }
 end
 
 
-local function PanelFooter(st)
-	if st.finished == "saved" then return "✓ Saved" end
+local function PickerPanelFooter(st)
+	if st.finished == "saved" then return "Saved" end
 	if st.finished == "exited" then return "Exited without saving" end
 	if st.finished ~= nil then return "" end
 	if st.mode == "scanning" then return "BACK cancel" end
@@ -1658,7 +1675,7 @@ local function PanelFooter(st)
 end
 
 
-local function PanelHint(st)
+local function PickerPanelHint(st)
 	if st.mode == "scanning" then return "Scanning for straps…" end
 	if st.mode == "empty" then return "No straps found.\nPut the strap on and make sure\nit is not connected elsewhere." end
 	if st.mode == "nogotempo" then return "gotempo is not running." end
@@ -1676,7 +1693,7 @@ end
 
 -- ── drawing ─────────────────────────────────────────────────────────────────
 
-local function PanelRow(pn, index)
+local function PickerPanelRow(pn, index)
 	return Def.ActorFrame{
 		DrawCommand=function(self)
 			local st = side[pn]
@@ -1707,7 +1724,7 @@ local function PanelRow(pn, index)
 		LoadFont("Common Normal")..{
 			Name="Marker",
 			InitCommand=function(self)
-				self:halign(0):zoom(0.6):x(-PANEL_W/2 + 14):settext("▸")
+				self:halign(0):zoom(0.6):x(-PANEL_W/2 + 14):settext("›")
 			end,
 			FillCommand=function(self, p)
 				self:visible(not p.row.divider and p.at == p.st.cursor)
@@ -1726,7 +1743,7 @@ local function PanelRow(pn, index)
 				self:visible(not p.row.divider)
 				if p.row.divider then return end
 				self:settext(p.row.name)
-				self:diffuse(p.at == p.st.cursor and PICKER_SEL or PICKER_TEXT)
+				self:diffuse(p.at == p.st.cursor and PICKER_SEL or Ink(p.st, "text"))
 				self:y((p.st.mode == "list") and -10 or 0)
 			end,
 		},
@@ -1737,8 +1754,8 @@ local function PanelRow(pn, index)
 				local value = RowValue(p.st, p.row)
 				self:visible(value ~= nil)
 				if value == nil then return end
-				self:settext("◂ " .. value .. " ▸")
-				self:diffuse(p.at == p.st.cursor and PICKER_SEL or PICKER_DIM)
+				self:settext("‹ " .. value .. " ›")
+				self:diffuse(p.at == p.st.cursor and PICKER_SEL or Ink(p.st, "dim"))
 			end,
 		},
 		Def.Quad{
@@ -1754,7 +1771,7 @@ local function PanelRow(pn, index)
 		LoadFont("Common Normal")..{
 			Name="Sub",
 			InitCommand=function(self)
-				self:halign(0):zoom(0.52):x(-PANEL_W/2 + 14 + P_GUTTER):y(10):diffuse(PICKER_DIM)
+				self:halign(0):zoom(0.52):x(-PANEL_W/2 + 14 + P_GUTTER):y(10)
 				self:maxwidth((PANEL_W - 40) / 0.52)
 			end,
 			FillCommand=function(self, p)
@@ -1762,6 +1779,7 @@ local function PanelRow(pn, index)
 				local show = (p.st.mode == "list") and row.mac ~= nil
 				self:visible(show)
 				if not show then return end
+				self:diffuse(Ink(p.st, "dim"))
 				local text = row.mac
 				if row.yours then
 					text = text .. "  ·  yours"
@@ -1775,13 +1793,12 @@ local function PanelRow(pn, index)
 end
 
 
-local function Panel(pn)
+local function PickerPanel(pn)
 	local af = Def.ActorFrame{
 		DrawCommand=function(self)
 			local st = side[pn]
 			self:visible(st ~= nil)
 			if st == nil then return end
-			self:diffusealpha(st.finished ~= nil and 0.55 or 1)
 
 			-- Keep the cursor inside the window, scrolling only when it leaves.
 			local visible = (st.mode == "list") and LIST_VISIBLE or NAV_VISIBLE
@@ -1798,7 +1815,8 @@ local function Panel(pn)
 			InitCommand=function(self) self:zoom(0.7):y(P_HEADER_Y):diffuse(PICKER_DIM) end,
 			DrawCommand=function(self)
 				local st = side[pn]
-				if st ~= nil then self:settext(PanelHeader(st)) end
+				if st == nil then return end
+				self:settext(PickerPanelHeader(st)):diffuse(Ink(st, "dim"))
 			end,
 		},
 		LoadFont("Common Normal")..{
@@ -1809,8 +1827,8 @@ local function Panel(pn)
 			DrawCommand=function(self)
 				local st = side[pn]
 				if st == nil then return end
-				local status = PanelStatus(st)
-				self:settext(status.mark .. "  " .. status.text):diffuse(status.color)
+				local status = PickerPanelStatus(st)
+				self:settext(status.mark .. "  " .. status.text):diffuse(Ink(st, status.ink))
 			end,
 		},
 		LoadFont("Common Normal")..{
@@ -1818,9 +1836,10 @@ local function Panel(pn)
 			InitCommand=function(self) self:zoom(0.6):y(P_STATUS_SUB_Y):diffuse(PICKER_DIM) end,
 			DrawCommand=function(self)
 				local st = side[pn]
-				local status = st and PanelStatus(st)
+				local status = st and PickerPanelStatus(st)
 				self:visible(status ~= nil and status.sub ~= nil)
-				self:settext(status and status.sub or "")
+				if status == nil then return end
+				self:settext(status.sub or ""):diffuse(Ink(st, "dim"))
 			end,
 		},
 		Def.Quad{
@@ -1836,9 +1855,9 @@ local function Panel(pn)
 			end,
 			DrawCommand=function(self)
 				local st = side[pn]
-				local hint = st and PanelHint(st)
+				local hint = st and PickerPanelHint(st)
 				self:visible(hint ~= nil)
-				self:settext(hint or "")
+				if hint ~= nil then self:settext(hint):diffuse(Ink(st, "dim")) end
 			end,
 		},
 		LoadFont("Common Normal")..{
@@ -1847,12 +1866,12 @@ local function Panel(pn)
 			DrawCommand=function(self)
 				local st = side[pn]
 				if st == nil then return end
-				self:settext(PanelFooter(st))
-				self:diffuse(st.finished == "saved" and PICKER_OK or PICKER_DIM)
+				self:settext(PickerPanelFooter(st))
+				self:diffuse(st.finished == "saved" and Ink(st, "ok") or Ink(st, "dim"))
 			end,
 		},
 	}
-	for i = 1, NAV_VISIBLE do af[#af+1] = PanelRow(pn, i) end
+	for i = 1, NAV_VISIBLE do af[#af+1] = PickerPanelRow(pn, i) end
 	return af
 end
 
@@ -1903,7 +1922,7 @@ local function Picker()
 	-- their own side rather than being centred, which says whose it is without
 	-- needing a label.
 	for pn = 1, 2 do
-		local panel = Panel(pn)
+		local panel = PickerPanel(pn)
 		panel.InitCommand = function(self)
 			self:x(pn == 1 and -(PANEL_W + PANEL_GAP) / 2 or (PANEL_W + PANEL_GAP) / 2)
 		end

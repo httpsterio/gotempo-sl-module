@@ -205,6 +205,18 @@ profile ini round-trip -- run outside the game:
 python3 mkharness.py && lua5.1 picker_test.lua
 ```
 
+It exits non-zero on failure. Check that rather than grepping the output for `FAIL`: a
+script that errors part-way prints no failures at all and reads as a pass.
+
 `mkharness.py` lifts the real function bodies out of `gotempo.lua` rather than copying
-them, so the tests cannot drift from the source. Use `luac5.1 -p gotempo.lua` to syntax
-check: the engine is Lua 5.1, and a newer `luac` will happily accept syntax it rejects.
+them, so the tests cannot drift from the source. It also fails on two top-level functions
+sharing a name: the later one silently shadows the earlier for everything below it, which
+is legal Lua and invisible to `luac`.
+
+Use `luac5.1 -p gotempo.lua` to syntax check. The engine is Lua 5.1, and a newer `luac`
+accepts syntax it rejects — `\u{...}` escapes in particular.
+
+Text is drawn in `Common Normal`, which redirects to the bitmap font `Miso/_miso light`.
+Its pages cover CP1252 plus Latin-2 and Cyrillic, so `… — · × « » • ‹ ›` are available and
+anything outside that (`✓ ✗ ● ▸`, geometric shapes, dingbats) draws as a missing-glyph box.
+Check a new symbol against `Fonts/Miso/_miso light.ini` before using it.
