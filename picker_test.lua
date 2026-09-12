@@ -55,7 +55,10 @@ local began, listed = 0, 0
 function BeginScan(st) began = began + 1 end
 function ShowList(st) listed = listed + 1 end
 
-dofile("extracted.lua")
+-- Beside this script, not beside the working directory: the Makefile, CI and a
+-- hand run all start from different places.
+local here = (arg and arg[0] or ""):match("^(.*)[/\\]") or "."
+dofile(here .. "/extracted.lua")
 
 local fails = 0
 local function check(ok, msg)

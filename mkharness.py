@@ -1,5 +1,16 @@
-import io, re, sys
-src = io.open("/home/sami/gotempo-sl-module/gotempo.lua", encoding="utf-8").read()
+# Lifts the real function bodies out of gotempo.lua into extracted.lua, so
+# picker_test.lua exercises the shipping source rather than a copy of it.
+#
+# Paths are resolved against this file, not the working directory: it runs from
+# the Makefile, from CI, and by hand, and a hardcoded path broke the first
+# release build.
+import io, os, re
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+SOURCE = os.path.join(HERE, "gotempo.lua")
+TARGET = os.path.join(HERE, "extracted.lua")
+
+src = io.open(SOURCE, encoding="utf-8").read()
 
 def grab(name):
     m = re.search(r"^local function %s\(.*?^end$" % re.escape(name), src, re.M | re.S)
@@ -27,5 +38,5 @@ if clashes:
         print("SHADOWED: %s defined at lines %s" % (name, ", ".join(map(str, lines))))
     raise SystemExit("duplicate top-level function names")
 
-io.open("extracted.lua", "w", encoding="utf-8").write("\n\n".join(out) + "\n")
+io.open(TARGET, "w", encoding="utf-8").write("\n\n".join(out) + "\n")
 print("extracted", len(names), "functions")
