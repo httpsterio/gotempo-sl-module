@@ -1,0 +1,35 @@
+name: release
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+
+      # The engine runs Lua 5.1. A newer luac accepts syntax it rejects, so the
+      # check has to be done with the matching version.
+      - name: Install Lua 5.1
+        run: sudo apt-get update && sudo apt-get install -y lua5.1
+
+      - name: Check
+        run: |
+          luac5.1 -p gotempo.lua
+          python3 mkharness.py
+          lua5.1 picker_test.lua
+
+      - name: Package
+        run: make dist VERSION=${GITHUB_REF_NAME}
+
+      - name: Create release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/gotempo-sl-module-${{ github.ref_name }}.zip

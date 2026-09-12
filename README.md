@@ -14,7 +14,8 @@ to the strap and writes the readings to a file. This module only reads that file
    - Linux: `bluetoothctl`, then `pair` and `trust`
    - Windows: Settings → Bluetooth & devices
 2. Download [gotempo](https://github.com/httpsterio/gotempo/releases/latest) and run it. It writes a default config. Quit it from the tray.
-3. Copy `gotempo.lua` and the `gotempo/` folder into the `Modules/` folder of the theme you play.
+3. Download the [module zip](https://github.com/httpsterio/gotempo-sl-module/releases/latest) and copy
+   `gotempo.lua` and the `gotempo/` folder out of it into the `Modules/` folder of the theme you play.
    - Linux: `~/.itgmania/Themes/Simply Love/Modules/`
    - Windows: `%APPDATA%\ITGmania\Themes\Simply Love\Modules\`
    - macOS: `~/Library/Application Support/ITGmania/Themes/Simply Love/Modules/`
@@ -28,8 +29,11 @@ to the strap and writes the readings to a file. This module only reads that file
    "itgmania_module": "/home/you/.itgmania/Themes/Simply Love/Modules/gotempo.lua"
 ```
 5. Start gotempo, then start ITGmania.
-6. On the song wheel press Select+Start. Go to Advanced → gotempo, pick your strap, choose Save and exit.
-7. Put the strap on. The heart in the corner lights up when readings arrive. Connecting takes a few seconds, longer if the electrodes are dry.
+6. On the song wheel press Left+Right to open the Sort Menu. Go to Advanced → gotempo.
+7. Put on your HR strap.
+7. Select "Choose a strap" and wait for the scan to finish.
+8. Select your strap, save and exit
+9. Wait for a few seconds and the heart icon in the top row should go bright red. You're now ready!
 
 Steps 2 and 4 in one command:
 
@@ -226,11 +230,11 @@ position and the heart grows away from them. Enlarging the heart therefore needs
 | `HR_COLOR_CHOICES` | 8 presets | What the picker's **Line colour** row steps through |
 | `HR_THICKNESS_CHOICES` | `0.6` … `2.5` | What **Line thickness** steps through |
 | `HR_THICKNESS_MAX` | `4` | Ceiling on a hand-written `Thickness` |
-| `STATUS_HEART` | `true` | Corner heart on the menu screens |
+| `STATUS_HEART` | `true` | Heart in the song wheel's header, one per side |
 | `STATUS_HEART_SIZE` | `14` | |
-| `STATUS_HEART_MARGIN` | `8` | Gap from the screen corner |
+| `STATUS_HEART_X` | `130` | Either side of screen centre, flanking the header's clock |
+| `STATUS_HEART_Y` | `16` | Centre of the 32-unit header bar |
 | `STATUS_HEART_LIVE` / `STATUS_HEART_DEAD` | pink / faint white | Reading arriving, or not |
-| `STATUS_HEART_SCREENS` | six menu screens | Where it is drawn |
 | `SORTMENU_TOP` / `SORTMENU_BOTTOM` | `"HR Strap Config"` / `"gotempo"` | The sort menu row. The bottom line is also the key the theme dispatches on |
 | `SCAN_WAIT` | `20` | Seconds the picker waits for gotempo before giving up |
 | `DEVICES_MAX_AGE` | `90` | Seconds before a published strap list is ignored |
@@ -255,6 +259,10 @@ python3 mkharness.py && lua5.1 picker_test.lua
 
 It exits non-zero on failure. Check that rather than grepping the output for `FAIL`: a
 script that errors part-way prints no failures at all and reads as a pass.
+
+`make check` runs the syntax check and the tests together. `make dist VERSION=v2.0.0` builds the
+release zip into `dist/` with only the files a player installs. `make release VERSION=v2.0.0` tags
+and pushes, and the tag triggers CI to build the same zip and publish it.
 
 `mkharness.py` lifts the real function bodies out of `gotempo.lua` rather than copying
 them, so the tests cannot drift from the source. It also fails on two top-level functions

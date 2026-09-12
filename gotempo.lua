@@ -177,13 +177,27 @@ local HR_THICKNESS_CHOICES = { 0.6, 0.8, 1.0, 1.2, 1.4, 1.7, 2.0, 2.5 }
 -- reading of its own.
 local STATUS_HEART = true
 local STATUS_HEART_SIZE = 14
-local STATUS_HEART_MARGIN = 8		-- from the screen corner
+
+-- In the header bar, one either side of the centre element.
+--
+-- Not the bottom corners, where it used to sit: those hold the player avatar
+-- (32x32, hard against the corner), the memory-card icon, and the credits text
+-- that this theme appends the session statistics to.  The heart was underneath
+-- the avatar.  The header has a fixed 32-unit bar and a narrow centred element
+-- -- the session timer in event mode, the stage number otherwise -- so the gaps
+-- either side of it are wide, symmetric, and do not change width with a
+-- username or a screen title.  Measured on the song wheel at 16:9: the title
+-- ends around x 191, the clock runs 389 to 462, and the game-mode text starts
+-- around 752.
+--
+-- Song wheel only.  On the menus before it no profile is loaded, so the only
+-- way this could light up there is a strap configured in gotempo itself rather
+-- than in a player's profile, which is the desktop case and not what the heart
+-- is for.
+local STATUS_HEART_X = 130		-- either side of screen centre
+local STATUS_HEART_Y = 16		-- the header bar is 32 tall, top-aligned
 local STATUS_HEART_LIVE = { 1, 0.18, 0.31, 1 }
 local STATUS_HEART_DEAD = { 1, 1, 1, 0.18 }
-local STATUS_HEART_SCREENS = {
-	"ScreenTitleMenu", "ScreenSelectProfile", "ScreenSelectPlayMode",
-	"ScreenSelectStyle", "ScreenSelectMusic", "ScreenPlayerOptions",
-}
 
 -- Simply Love's evaluation layout, which a module has to recompute because it
 -- draws in ScreenSystemLayer and cannot reach that screen's actors.  From
@@ -1191,9 +1205,8 @@ local function StatusHeart(pn)
 
 	return Def.ActorFrame{
 		InitCommand=function(self)
-			local inset = STATUS_HEART_MARGIN + STATUS_HEART_SIZE / 2
-			self:xy(pn == 1 and inset or _screen.w - inset,
-			        _screen.h - STATUS_HEART_MARGIN - STATUS_HEART_SIZE / 2)
+			self:xy(_screen.cx + (pn == 1 and -STATUS_HEART_X or STATUS_HEART_X),
+			        STATUS_HEART_Y)
 			-- Shown from the first poll on, once there is something to report.
 			self:visible(false)
 		end,
@@ -2132,9 +2145,6 @@ t.ScreenSelectMusic = Def.ActorFrame{
 	StatusHearts(),
 	Picker(),
 }
-for _, screen in ipairs(STATUS_HEART_SCREENS) do
-	if t[screen] == nil then t[screen] = StatusHearts() end
-end
 t.ScreenEvaluation = PublishOnly()
 t.ScreenEvaluationNonstop = PublishOnly()
 t.ScreenEvaluationSummary = PublishOnly()
