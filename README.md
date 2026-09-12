@@ -69,6 +69,42 @@ Thickness=1.4
 Pair the strap to the machine once first. Nothing is saved on gotempo's side, so leaving the song
 flow, or quitting the game, hands the straps back to whatever it was set to before.
 
+You do not have to write any of this by hand. In game, open the sort menu on the song wheel
+(**Select+Start** by default) and go to **Advanced → gotempo**. Each joined player gets their
+own panel, driven by their own controller, showing their current strap and its live reading:
+
+```
+┌──────────────────────────────┐  ┌──────────────────────────────┐
+│  P1 · http                   │  │  P2 · Sami KB · unsaved      │
+│  ✓ Polar H10 1841CC31        │  │  ✗ No strap selected         │
+│    72 bpm                    │  │                              │
+│  ──────────────────────────  │  │  ──────────────────────────  │
+│  ▸ Change strap              │  │  ▸ Choose a strap            │
+│    Remove strap              │  │    Line colour    ◂ FF4FA3 ▸ │
+│    Line colour    ◂ F56C27 ▸ │  │    Line thickness ◂ 1.0 ▸    │
+│    Line thickness ◂ 1.4 ▸    │  │    Save and exit             │
+│    Save and exit             │  │    Back without saving       │
+│    Exit                      │  │                              │
+└──────────────────────────────┘  └──────────────────────────────┘
+```
+
+Up and down move, left and right change a value, **Start** selects. Nothing is written until
+**Save and exit**, so a pick can be undone by leaving. **Back** steps out of the strap list,
+and at the top level it parks the cursor on Save rather than acting, so the reflex press
+lands on the safe outcome.
+
+The menu closes when every joined player is done, not when the first one is — so P1 finishing
+does not take the screen away from P2. One player can drive both panels using the other side's
+buttons, as at any cabinet. A side with no profile loaded can save nothing and never holds the
+menu open.
+
+Choosing a strap scans for what is in range; gotempo does the scanning, since this module has
+no Bluetooth of its own, so gotempo has to be running. Whoever asks first starts the scan and
+both panels fill at once. Straps nobody has claimed are listed first, then a divider, then
+ones some profile already names with the names beside them — which is what makes the list
+readable in a room with several cabinets. Those are still pickable: two players sharing one
+strap is allowed, and gotempo connects it once and feeds both sides.
+
 `Color` and `Thickness` are optional and affect only that player's evaluation graph: the line, its
 labels and the mean rule. `Color` is hex, with or without the `#`, six digits or eight for an
 alpha. `Thickness` multiplies the configured width, capped at 4, and holds at every slope rather
@@ -159,3 +195,16 @@ position and the heart grows away from them. Enlarging the heart therefore needs
 | `MIN_BPM` / `MAX_BPM` | `20` / `999` | Outside this hides the panel |
 | `STALE_AFTER_SECONDS` | `60` | Timestamp age before hiding |
 | `HIDE_WHEN_STALE` | `true` | `false` shows `STALE_TEXT` instead |
+
+## Tests
+
+The parts that are pure logic -- reading gotempo's device list, ordering the picker, the
+profile ini round-trip -- run outside the game:
+
+```
+python3 mkharness.py && lua5.1 picker_test.lua
+```
+
+`mkharness.py` lifts the real function bodies out of `gotempo.lua` rather than copying
+them, so the tests cannot drift from the source. Use `luac5.1 -p gotempo.lua` to syntax
+check: the engine is Lua 5.1, and a newer `luac` will happily accept syntax it rejects.

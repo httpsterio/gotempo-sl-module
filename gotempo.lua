@@ -76,6 +76,27 @@ local POLL_SECONDS = 1
 -- there is no goodbye to send, so a stamp that stops advancing is the signal.
 local PLAYERS_FILE = GOTEMPO_DIR .. "players.txt"
 
+-- The strap list the picker reads, published by gotempo when asked and blanked
+-- again about a minute later.  The module has no Bluetooth -- that is the whole
+-- point of the split -- so asking is the only way to find out what is in range.
+-- The request travels as a "scan <token>" line in players.txt above, inheriting
+-- that file's stamp rather than needing a channel of its own; gotempo serves a
+-- token it has not served before, so the line can sit there for as long as the
+-- picker is open, and a retry is simply a new token.
+local DEVICES_FILE = GOTEMPO_DIR .. "devices.txt"
+local DEVICES_MAX_AGE = 90		-- seconds; older than this is not an answer
+local SCAN_WAIT = 20			-- seconds before giving up on gotempo
+
+-- The sort menu row, as {toptext, bottomtext}.  The bottom line is the larger of
+-- the two, so the name goes there and the description sits above it.
+--
+-- Neither needs a Languages entry: the wheel item falls back to the literal
+-- string when the theme has no lookup for it.  The bottom text must not start
+-- with "Category", which the theme strips as a submenu prefix -- and it is also
+-- the key the theme dispatches on, so it is what custom_functions is keyed by.
+local SORTMENU_TOP = "HR Strap Config"
+local SORTMENU_BOTTOM = "gotempo"
+
 -- The heart-rate line drawn over the density graph on the evaluation screen.
 --
 -- Samples are collected once a second during gameplay, against the song's own
@@ -134,6 +155,15 @@ local HR_GRAPH_GAP = 3			-- seconds of silence that break the line
 -- not MenuUp: on a pad that is part of the theme's favourite-song code, and the
 -- line would flicker while somebody entered it.
 local HR_GRAPH_TOGGLE = "MenuDown"
+
+-- What the in-game picker's appearance rows offer.  Presets rather than free
+-- entry: there is no keyboard at a cabinet, and a palette is quicker than
+-- stepping a hex value one digit at a time.  The first colour is the default.
+local HR_COLOR_CHOICES = {
+	"#FF4FA3", "#F56C27", "#FFC24B", "#13BE74",
+	"#4DB8FF", "#B07CFF", "#FF5555", "#FFFFFF",
+}
+local HR_THICKNESS_CHOICES = { 0.6, 0.8, 1.0, 1.2, 1.4, 1.7, 2.0, 2.5 }
 
 -- A heart in the corner of every other screen, so the wait for a strap to
 -- connect is visible somewhere other than the tray.  Lit and beating when that
@@ -432,11 +462,18 @@ end
 
 -- A profile's colour, as hex, validated before color() sees it: a typo in a
 -- file gotempo never writes should fall back, not take the graph down.
-local function ParseColor(text)
+local function NormalizeHex(text)
 	if type(text) ~= "string" then return nil end
 	local hex = text:match("^%s*#?(%x+)%s*$")
 	if hex == nil or (#hex ~= 6 and #hex ~= 8) then return nil end
-	return color("#" .. hex)
+	return "#" .. hex
+end
+
+
+local function ParseColor(text)
+	local hex = NormalizeHex(text)
+	if hex == nil then return nil end
+	return color(hex)
 end
 
 
@@ -474,7 +511,10 @@ local function ProfileStyle(pn)
 		local contents = IniFile.ReadFile(dir .. PROFILE_INI)
 		local section = contents and contents[PROFILE_SECTION]
 		if section ~= nil then
-			style.color = ParseColor(section[PROFILE_KEY_COLOR]) or style.color
+			-- colorHex is kept alongside the parsed colour so the picker can
+			-- show which preset this profile is on without re-reading the file.
+			local hex = NormalizeHex(section[PROFILE_KEY_COLOR])
+			if hex ~= nil then style.color, style.colorHex = color(hex), hex end
 			local scale = ParseThickness(section[PROFILE_KEY_THICKNESS])
 			if scale ~= nil then style.thickness = HR_GRAPH_THICKNESS * scale end
 		end
@@ -482,6 +522,148 @@ local function ProfileStyle(pn)
 
 	styleCache[pn] = { dir = dir, style = style }
 	return style
+end
+
+
+-- ── the strap picker ────────────────────────────────────────────────────────
+--
+-- Finding your own strap's MAC otherwise means a terminal and `--list-devices`,
+-- which at a cabinet means nobody ever names one and the profile feature goes
+-- unused.  This puts it in the game: open the sort menu, pick your strap off a
+-- list, and it is written into your own profile.
+
+-- ReadDevices returns gotempo's answer as {mac=, name=}, newest first by MAC
+-- order, or nil when there is no usable answer yet.  Empty is not nil: gotempo
+-- blanks the file about a minute after publishing, and an empty file means "the
+-- list has expired", not "still waiting".
+local function ReadDevices()
+	local file = RageFileUtil.CreateRageFile()
+	local text = nil
+	if file:Open(DEVICES_FILE, 1) then
+		text = file:Read()
+		file:Close()
+	end
+	file:destroy()
+
+	if text == nil or text == "" then return nil end
+
+	local lines = {}
+	for line in text:gmatch("[^\r\n]+") do lines[#lines+1] = line end
+	if #lines == 0 then return nil end
+
+	-- Same stamp the other two files carry, and rejected the same way: nothing
+	-- in this channel can send a goodbye, so an answer that stopped being
+	-- rewritten has to age out rather than be withdrawn.
+	local date, secs = lines[1]:match("^(%d+)%s+(%d+)$")
+	if date == nil then return nil end
+	if tonumber(date) ~= todayStamp() then return nil end
+	local age = secondsOfDay() - tonumber(secs)
+	if age < 0 then age = 0 end
+	if age > DEVICES_MAX_AGE then return nil end
+
+	local out = {}
+	for i = 2, #lines do
+		local mac, name = lines[i]:match("^(%S+)%s*(.*)$")
+		if mac ~= nil then
+			out[#out+1] = { mac = mac, name = (name ~= "" and name or mac) }
+		end
+	end
+	return out
+end
+
+
+-- Every local profile that names a strap, as MAC -> { display names }.
+--
+-- This is what makes the list usable where it matters.  A venue with three cabs
+-- in one room has six people playing and more standing about, so a scan can turn
+-- up a dozen straps; without owner names they are an undifferentiated column of
+-- hex and nobody can tell which are free.
+--
+-- Enumeration follows the theme's own, in
+-- BGAnimations/ScreenSelectProfile underlay/PlayerProfileData.lua.
+local function StrapOwners()
+	local owners = {}
+	if PROFILEMAN == nil or IniFile == nil then return owners end
+
+	for i = 1, PROFILEMAN:GetNumLocalProfiles() do
+		-- Both index calls are 0-based.
+		local profile = PROFILEMAN:GetLocalProfileFromIndex(i - 1)
+		local id = PROFILEMAN:GetLocalProfileIDFromIndex(i - 1)
+		local dir = id and PROFILEMAN:LocalProfileIDToDir(id)
+
+		if profile ~= nil and dir ~= nil and #dir > 0 then
+			local contents = IniFile.ReadFile(dir .. PROFILE_INI)
+			local section = contents and contents[PROFILE_SECTION]
+			local mac = section and section[PROFILE_KEY]
+			if type(mac) == "string" and #mac > 0 then
+				local key = mac:upper()
+				owners[key] = owners[key] or {}
+				table.insert(owners[key], profile:GetDisplayName())
+			end
+		end
+	end
+	return owners
+end
+
+
+-- The list as one side sees it: the strap that side already holds, then ones
+-- nobody claims, then a divider and the rest.  Position alone answers "which of
+-- these is free", so nothing has to be read to find one.  Claimed straps stay
+-- listed and stay pickable, because sharing a strap is a legitimate thing to do.
+--
+-- mine is that side's own strap, and it is first rather than filed under "in use
+-- by others", which is what it would otherwise be: the profile claiming it is
+-- theirs.
+local function PickerRows(devices, owners, mine)
+	local own, free, used = {}, {}, {}
+	for _, d in ipairs(devices) do
+		local who = owners[d.mac:upper()]
+		local row = { mac = d.mac, name = d.name, owners = who }
+
+		if mine ~= nil and d.mac:upper() == mine:upper() then
+			row.yours, row.owners = true, nil
+			own[#own+1] = row
+		else
+			table.insert(who and used or free, row)
+		end
+	end
+
+	local byName = function(a, b) return a.name:lower() < b.name:lower() end
+	table.sort(free, byName)
+	table.sort(used, byName)
+
+	local rows = own
+	for _, row in ipairs(free) do rows[#rows+1] = row end
+	if #used > 0 then
+		if #rows > 0 then rows[#rows+1] = { divider = true } end
+		for _, row in ipairs(used) do rows[#rows+1] = row end
+	end
+	return rows
+end
+
+
+-- Commits one side's choices to that player's own profile.  Everything outside
+-- this module's section is left alone, and a nil device removes the key rather
+-- than writing an empty one.
+--
+-- st carries indices into the choice tables rather than values, because that is
+-- what the adjuster rows step through.
+local function WriteProfileSettings(pn, st)
+	if PROFILEMAN == nil or IniFile == nil then return false end
+	local dir = PROFILEMAN:GetProfileDir(PROFILE_SLOTS[pn])
+	if dir == nil or #dir == 0 then return false end
+
+	local path = dir .. PROFILE_INI
+	local contents = IniFile.ReadFile(path) or {}
+	local section = contents[PROFILE_SECTION] or {}
+	contents[PROFILE_SECTION] = section
+
+	section[PROFILE_KEY] = st.device
+	section[PROFILE_KEY_COLOR] = HR_COLOR_CHOICES[st.color]
+	section[PROFILE_KEY_THICKNESS] = HR_THICKNESS_CHOICES[st.thickness]
+
+	IniFile.WriteFile(path, contents)
+	return true
 end
 
 
@@ -494,6 +676,19 @@ local graphShown = { true, true }
 -- Publishes who is playing.  Called on every tick rather than on screen entry:
 -- the stamp is the payload, so a file that stops being rewritten is how gotempo
 -- learns the game is gone.  Sides are reported even when they name no strap.
+-- Non-nil while the picker wants a device list.  Carried in players.txt on the
+-- next tick, and kept there until the picker closes: gotempo ignores a token it
+-- has already served, so repeating it costs nothing.
+local scanToken = nil
+
+local function RequestScan()
+	scanToken = secondsOfDay()
+	return scanToken
+end
+
+local function CancelScan() scanToken = nil end
+
+
 local function WritePlayers()
 	local lines = { string.format("%04d%02d%02d %d",
 		Year(), MonthOfYear() + 1, DayOfMonth(), secondsOfDay()) }
@@ -502,6 +697,9 @@ local function WritePlayers()
 		if GAMESTATE:IsSideJoined(SIDES[pn]) then
 			lines[#lines+1] = string.format("p%d %s", pn, ProfileDevice(pn) or "-")
 		end
+	end
+	if scanToken ~= nil then
+		lines[#lines+1] = string.format("scan %d", scanToken)
 	end
 
 	local file = RageFileUtil.CreateRageFile()
@@ -1072,6 +1270,721 @@ local function WatchToggle()
 end
 
 
+-- ── the picker's screen ─────────────────────────────────────────────────────
+--
+-- Two panels, one per side, each driven by that side's own controller.  Whose
+-- pick this is stops being a question the menu has to ask: it is whoever pressed
+-- the button, which the input event already says.  An earlier single-panel
+-- version carried a P1/P2 selector and a mode chosen when it opened, and every
+-- bug in it came from those two disagreeing.
+--
+-- Changes are held per side and written only on Save, so a pick can be undone by
+-- leaving, and so browsing the list does not make gotempo connect and reconnect
+-- behind the menu.
+
+local PANEL_W = 400
+local PANEL_GAP = 22
+local PANEL_H = 392
+
+local PICKER_BG = color("#0B0F14FF")	-- opaque: a menu you can read the wheel through is not a menu
+local PICKER_RULE = color("#FFFFFF22")
+local PICKER_TEXT = color("#E0E0E0")
+local PICKER_DIM = color("#E0E0E0AA")
+local PICKER_OK = color("#13BE74")
+local PICKER_BAD = color("#D35612")
+
+-- A third hue, deliberately.  Green and red are the two status colours and are
+-- the pair most often confused, so the cursor takes neither; the marker and the
+-- bar behind the row mean colour is never carrying it alone anyway.
+local PICKER_SEL = color("#4DB8FF")
+local PICKER_SEL_BAR = color("#4DB8FF33")
+
+-- Every module's actors for a screen are siblings under one frame, so draw order
+-- decides which sits on top and the default is load order, which is the Modules/
+-- directory listing.
+local PICKER_DRAW_ORDER = 200
+local PICKER_GUARD = 0.1		-- how often the input redirect is reasserted
+
+-- Panel-local layout, written out rather than derived: deriving it put one row
+-- on top of another the moment a line was added between them.
+local P_HEADER_Y = -178
+local P_STATUS_Y = -146
+local P_STATUS_SUB_Y = -126
+local P_RULE_TOP_Y = -108
+-- List rows are taller, so they start lower: sharing one origin put the first
+-- one's top edge exactly on the rule above it.
+local NAV_ROWS_Y = -86
+local LIST_ROWS_Y = -76
+local P_RULE_BOT_Y = 152
+local P_FOOTER_Y = 172
+local P_GUTTER = 18			-- fixed, so the marker never shifts the text
+
+local NAV_ROW_H = 30
+local NAV_VISIBLE = 8
+local LIST_ROW_H = 44
+local LIST_VISIBLE = 5
+
+
+
+local picker = { open = false }
+local side = {}
+
+
+local function ChoiceIndex(list, value, fallback)
+	for i, v in ipairs(list) do
+		if tostring(v):upper() == tostring(value):upper() then return i end
+	end
+	return fallback
+end
+
+
+-- ── per-side state ──────────────────────────────────────────────────────────
+
+local function SideRows(st)
+	local rows = {}
+	rows[#rows+1] = { action = "choose", name = st.device and "Change strap" or "Choose a strap" }
+	if st.device ~= nil then
+		rows[#rows+1] = { action = "remove", name = "Remove strap" }
+	end
+	rows[#rows+1] = { adjust = "color", name = "Line colour" }
+	rows[#rows+1] = { adjust = "thickness", name = "Line thickness" }
+	rows[#rows+1] = { action = "save", name = "Save and exit" }
+	-- Named for what it will actually do, so a player who changed nothing is not
+	-- told they are discarding.
+	rows[#rows+1] = { action = "exit", name = st.dirty and "Back without saving" or "Exit" }
+	return rows
+end
+
+local function ShowNav(st)
+	st.mode = "nav"
+	st.rows = SideRows(st)
+	st.cursor = math.min(st.cursor or 1, #st.rows)
+	st.first = 1
+end
+
+local function ShowList(st)
+	st.mode = "list"
+	st.cursor, st.first = 1, 1
+	st.rows = PickerRows(picker.devices or {}, picker.owners or {}, st.device)
+	st.rows[#st.rows+1] = { action = "rescan", name = "Scan again" }
+	st.rows[#st.rows+1] = { action = "back", name = "Back" }
+	for i, row in ipairs(st.rows) do
+		if not row.divider then st.cursor = i break end
+	end
+end
+
+
+-- The scan belongs to the machine, not to a side.  Whoever asks first starts it
+-- and both lists fill at once; a side opening the list afterwards gets the
+-- result straight away, with no second scan and no second wait.
+local function BeginScan(st)
+	if picker.devices ~= nil and not picker.scanning then
+		ShowList(st)
+		return
+	end
+	st.mode = "scanning"
+	st.rows, st.cursor, st.first = {}, 1, 1
+	if not picker.scanning then
+		picker.scanning = true
+		picker.waitUntil = secondsOfDay() + SCAN_WAIT
+		RequestScan()
+	end
+end
+
+
+local function FinishSide(st, how)
+	st.finished = how
+	st.mode = "done"
+	st.rows, st.cursor = {}, 1
+end
+
+local function SaveSide(st)
+	WriteProfileSettings(st.pn, st)
+	st.dirty = false
+	FinishSide(st, "saved")
+end
+
+
+-- Everyone who could still act.  A side with no profile has nowhere to save, so
+-- it counts as finished from the start rather than blocking the close.
+local function PickerAllDone()
+	for _, st in pairs(side) do
+		if st.profile and st.finished == nil then return false end
+	end
+	return true
+end
+
+
+-- ── opening and closing ─────────────────────────────────────────────────────
+
+local function PickerRedirect(on)
+	if SCREENMAN == nil then return end
+	for player in ivalues(PlayerNumber) do
+		SCREENMAN:set_input_redirected(player, on)
+	end
+end
+
+
+local function PickerOpen()
+	if picker.open then return end
+
+	side = {}
+	local any = false
+	for pn = 1, 2 do
+		if GAMESTATE:IsSideJoined(SIDES[pn]) then
+			local dir = PROFILEMAN and PROFILEMAN:GetProfileDir(PROFILE_SLOTS[pn])
+			local st = { pn = pn, profile = dir ~= nil and #dir > 0, cursor = 1, first = 1, dirty = false }
+
+			if st.profile then
+				local style = ProfileStyle(pn)
+				st.device = ProfileDevice(pn)
+				st.color = ChoiceIndex(HR_COLOR_CHOICES, style.colorHex or HR_COLOR_CHOICES[1], 1)
+				st.thickness = ChoiceIndex(HR_THICKNESS_CHOICES,
+					style.thickness / HR_GRAPH_THICKNESS, ChoiceIndex(HR_THICKNESS_CHOICES, 1.0, 3))
+				ShowNav(st)
+				any = true
+			else
+				FinishSide(st, "noprofile")
+			end
+			side[pn] = st
+		end
+	end
+	if not any then return end
+
+	picker.open = true
+	picker.devices, picker.owners, picker.scanning, picker.waitUntil = nil, nil, false, nil
+	PickerRedirect(true)
+
+	-- The wheel may still be coasting from the press that opened the menu.
+	local screen = SCREENMAN:GetTopScreen()
+	if screen ~= nil and screen.GetMusicWheel ~= nil then
+		screen:GetMusicWheel():Move(0)
+	end
+end
+
+
+local function PickerClose()
+	picker.open = false
+	PickerRedirect(false)
+	CancelScan()
+end
+
+
+-- ── input ───────────────────────────────────────────────────────────────────
+
+local function Adjust(st, row, delta)
+	if row.adjust == "color" then
+		st.color = ((st.color - 1 + delta) % #HR_COLOR_CHOICES) + 1
+	elseif row.adjust == "thickness" then
+		st.thickness = ((st.thickness - 1 + delta) % #HR_THICKNESS_CHOICES) + 1
+	else
+		return
+	end
+	st.dirty = true
+	ShowNav(st)	-- the exit row is named after this flag
+end
+
+
+local function Confirm(st)
+	local row = st.rows[st.cursor]
+	if row == nil then return end
+
+	if row.action == "choose" then
+		BeginScan(st)
+	elseif row.action == "remove" then
+		st.device, st.dirty = nil, true
+		ShowNav(st)
+	elseif row.action == "save" then
+		SaveSide(st)
+	elseif row.action == "exit" then
+		FinishSide(st, "exited")
+	elseif row.action == "rescan" then
+		picker.devices = nil
+		BeginScan(st)
+	elseif row.action == "back" then
+		ShowNav(st)
+	elseif row.mac ~= nil then
+		st.device, st.dirty = row.mac, true
+		ShowNav(st)
+	end
+end
+
+
+local function Move(st, delta)
+	if #st.rows == 0 then return end
+	local i = st.cursor
+	for _ = 1, #st.rows do
+		i = ((i - 1 + delta) % #st.rows) + 1
+		if not st.rows[i].divider then
+			st.cursor = i
+			return
+		end
+	end
+end
+
+
+local function PickerInput(event)
+	if not picker.open then return false end
+	if event == nil or event.type ~= "InputEventType_FirstPress" then return true end
+
+	local pn = EventSide(event)
+	local st = pn and side[pn]
+	if st == nil then return true end
+
+	local b = event.GameButton
+
+	-- A finished side is inert except for changing its mind, which beats making
+	-- someone close and reopen the whole menu because they picked the wrong H10.
+	if st.finished ~= nil then
+		if b == "Start" and st.profile then
+			st.finished = nil
+			ShowNav(st)
+			MESSAGEMAN:Broadcast("GotempoPickerChanged")
+		end
+		return true
+	end
+
+	if b == "MenuUp" then
+		Move(st, -1)
+	elseif b == "MenuDown" then
+		Move(st, 1)
+	elseif b == "MenuLeft" or b == "MenuRight" then
+		local row = st.rows[st.cursor]
+		if row ~= nil and row.adjust ~= nil then
+			Adjust(st, row, b == "MenuRight" and 1 or -1)
+		end
+	elseif b == "Start" then
+		if st.mode == "nav" or st.mode == "list" then
+			Confirm(st)
+		elseif st.mode == "empty" or st.mode == "nogotempo" then
+			picker.devices = nil
+			BeginScan(st)
+		end
+	elseif b == "Back" or b == "Select" then
+		-- Back never acts at the top level. It parks the cursor on Save and exit
+		-- instead, so leaving without saving takes deliberate navigation and the
+		-- reflex press lands on the safe outcome.
+		if st.mode == "nav" then
+			for i, row in ipairs(st.rows) do
+				if row.action == "save" then st.cursor = i end
+			end
+		else
+			ShowNav(st)
+		end
+	end
+
+	if PickerAllDone() then PickerClose() end
+	MESSAGEMAN:Broadcast("GotempoPickerChanged")
+	return true
+end
+
+
+-- ── polling ─────────────────────────────────────────────────────────────────
+
+local function PickerPoll()
+	if not picker.scanning then return end
+
+	local devices = ReadDevices()
+	if devices ~= nil then
+		picker.devices = devices
+		picker.owners = StrapOwners()
+		picker.scanning = false
+		CancelScan()
+		for _, st in pairs(side) do
+			if st.mode == "scanning" then
+				if #devices == 0 then st.mode = "empty" else ShowList(st) end
+			end
+		end
+	elseif secondsOfDay() > (picker.waitUntil or 0) then
+		picker.scanning = false
+		CancelScan()
+		for _, st in pairs(side) do
+			if st.mode == "scanning" then st.mode = "nogotempo" end
+		end
+	end
+end
+
+
+-- ── what a panel says ───────────────────────────────────────────────────────
+
+local function PanelHeader(st)
+	local name = "P" .. st.pn
+	if st.profile and PROFILEMAN ~= nil then
+		local profile = PROFILEMAN:GetProfile(SIDES[st.pn])
+		if profile ~= nil then name = name .. " · " .. profile:GetDisplayName() end
+	end
+	if st.dirty then name = name .. " · unsaved" end
+	return name
+end
+
+
+-- The strap this side will have, and whether anything is coming from it.
+--
+-- The reading only belongs beside a strap that is actually saved: while a pick
+-- is pending, hr.txt still carries whatever gotempo is connected to now, and
+-- showing that number under a different strap's name would be a lie.
+local function PanelStatus(st)
+	if not st.profile then
+		return { mark = "✗", text = "No profile loaded", color = PICKER_BAD }
+	end
+	if st.device == nil then
+		return { mark = "✗", text = "No strap selected", color = PICKER_BAD }
+	end
+
+	local name = st.device
+	for _, d in ipairs(picker.devices or {}) do
+		if d.mac:upper() == st.device:upper() then name = d.name end
+	end
+
+	if st.dirty then
+		return { mark = "●", text = name, color = PICKER_TEXT, sub = "saves on exit" }
+	end
+	local bpm = ReadHeartRate(HR_FILES[st.pn])
+	if bpm ~= nil then
+		return { mark = "✓", text = name, color = PICKER_OK, sub = bpm .. " bpm" }
+	end
+	return { mark = "◦", text = name, color = PICKER_DIM, sub = "connecting…" }
+end
+
+
+local function PanelFooter(st)
+	if st.finished == "saved" then return "✓ Saved" end
+	if st.finished == "exited" then return "Exited without saving" end
+	if st.finished ~= nil then return "" end
+	if st.mode == "scanning" then return "BACK cancel" end
+	if st.mode == "empty" or st.mode == "nogotempo" then return "START retry     BACK back" end
+	if st.mode == "list" then return "START pick      BACK back" end
+	return "START select"
+end
+
+
+local function PanelHint(st)
+	if st.mode == "scanning" then return "Scanning for straps…" end
+	if st.mode == "empty" then return "No straps found.\nPut the strap on and make sure\nit is not connected elsewhere." end
+	if st.mode == "nogotempo" then return "gotempo is not running." end
+	return nil
+end
+
+
+-- The value shown on an adjuster row.
+local function RowValue(st, row)
+	if row.adjust == "color" then return HR_COLOR_CHOICES[st.color] end
+	if row.adjust == "thickness" then return string.format("%.1f", HR_THICKNESS_CHOICES[st.thickness]) end
+	return nil
+end
+
+
+-- ── drawing ─────────────────────────────────────────────────────────────────
+
+local function PanelRow(pn, index)
+	return Def.ActorFrame{
+		DrawCommand=function(self)
+			local st = side[pn]
+			local row = st and st.rows[(st.first or 1) + index - 1]
+			self:visible(row ~= nil)
+			if row == nil then return end
+
+			local list = (st.mode == "list")
+			local h = list and LIST_ROW_H or NAV_ROW_H
+			self:y((list and LIST_ROWS_Y or NAV_ROWS_Y) + (index - 1) * h)
+			self:playcommand("Fill", { st = st, row = row, at = (st.first or 1) + index - 1 })
+		end,
+
+		Def.Quad{
+			Name="Bar",
+			InitCommand=function(self) self:zoomto(PANEL_W - 24, NAV_ROW_H - 4):diffuse(PICKER_SEL_BAR) end,
+			FillCommand=function(self, p)
+				self:visible(not p.row.divider and p.at == p.st.cursor)
+				local h = (p.st.mode == "list") and LIST_ROW_H or NAV_ROW_H
+				self:zoomto(PANEL_W - 24, h - 4)
+			end,
+		},
+		Def.Quad{
+			Name="Rule",
+			InitCommand=function(self) self:zoomto(PANEL_W - 40, 1):diffuse(PICKER_RULE) end,
+			FillCommand=function(self, p) self:visible(p.row.divider == true) end,
+		},
+		LoadFont("Common Normal")..{
+			Name="Marker",
+			InitCommand=function(self)
+				self:halign(0):zoom(0.6):x(-PANEL_W/2 + 14):settext("▸")
+			end,
+			FillCommand=function(self, p)
+				self:visible(not p.row.divider and p.at == p.st.cursor)
+				self:diffuse(PICKER_SEL)
+				self:y((p.st.mode == "list") and -10 or 0)
+			end,
+		},
+		LoadFont("Common Normal")..{
+			Name="Name",
+			-- Indented past a gutter the marker lives in, so selecting a row
+			-- never shifts its text sideways.
+			InitCommand=function(self)
+				self:halign(0):zoom(0.7):x(-PANEL_W/2 + 14 + P_GUTTER):maxwidth((PANEL_W - 150) / 0.7)
+			end,
+			FillCommand=function(self, p)
+				self:visible(not p.row.divider)
+				if p.row.divider then return end
+				self:settext(p.row.name)
+				self:diffuse(p.at == p.st.cursor and PICKER_SEL or PICKER_TEXT)
+				self:y((p.st.mode == "list") and -10 or 0)
+			end,
+		},
+		LoadFont("Common Normal")..{
+			Name="Value",
+			InitCommand=function(self) self:halign(1):zoom(0.65):x(PANEL_W/2 - 16) end,
+			FillCommand=function(self, p)
+				local value = RowValue(p.st, p.row)
+				self:visible(value ~= nil)
+				if value == nil then return end
+				self:settext("◂ " .. value .. " ▸")
+				self:diffuse(p.at == p.st.cursor and PICKER_SEL or PICKER_DIM)
+			end,
+		},
+		Def.Quad{
+			Name="Swatch",
+			InitCommand=function(self) self:zoomto(12, 12):x(PANEL_W/2 - 118) end,
+			FillCommand=function(self, p)
+				self:visible(p.row.adjust == "color")
+				if p.row.adjust == "color" then
+					self:diffuse(color(HR_COLOR_CHOICES[p.st.color]))
+				end
+			end,
+		},
+		LoadFont("Common Normal")..{
+			Name="Sub",
+			InitCommand=function(self)
+				self:halign(0):zoom(0.52):x(-PANEL_W/2 + 14 + P_GUTTER):y(10):diffuse(PICKER_DIM)
+				self:maxwidth((PANEL_W - 40) / 0.52)
+			end,
+			FillCommand=function(self, p)
+				local row = p.row
+				local show = (p.st.mode == "list") and row.mac ~= nil
+				self:visible(show)
+				if not show then return end
+				local text = row.mac
+				if row.yours then
+					text = text .. "  ·  yours"
+				elseif row.owners ~= nil then
+					text = text .. "  ·  " .. table.concat(row.owners, ", ")
+				end
+				self:settext(text)
+			end,
+		},
+	}
+end
+
+
+local function Panel(pn)
+	local af = Def.ActorFrame{
+		DrawCommand=function(self)
+			local st = side[pn]
+			self:visible(st ~= nil)
+			if st == nil then return end
+			self:diffusealpha(st.finished ~= nil and 0.55 or 1)
+
+			-- Keep the cursor inside the window, scrolling only when it leaves.
+			local visible = (st.mode == "list") and LIST_VISIBLE or NAV_VISIBLE
+			st.first = st.first or 1
+			if st.cursor < st.first then st.first = st.cursor end
+			if st.cursor > st.first + visible - 1 then st.first = st.cursor - visible + 1 end
+		end,
+
+		Def.Quad{
+			InitCommand=function(self) self:zoomto(PANEL_W, PANEL_H):diffuse(PICKER_BG) end,
+		},
+		LoadFont("Common Normal")..{
+			Name="Header",
+			InitCommand=function(self) self:zoom(0.7):y(P_HEADER_Y):diffuse(PICKER_DIM) end,
+			DrawCommand=function(self)
+				local st = side[pn]
+				if st ~= nil then self:settext(PanelHeader(st)) end
+			end,
+		},
+		LoadFont("Common Normal")..{
+			Name="Status",
+			InitCommand=function(self)
+				self:zoom(0.78):y(P_STATUS_Y):maxwidth((PANEL_W - 40) / 0.78)
+			end,
+			DrawCommand=function(self)
+				local st = side[pn]
+				if st == nil then return end
+				local status = PanelStatus(st)
+				self:settext(status.mark .. "  " .. status.text):diffuse(status.color)
+			end,
+		},
+		LoadFont("Common Normal")..{
+			Name="StatusSub",
+			InitCommand=function(self) self:zoom(0.6):y(P_STATUS_SUB_Y):diffuse(PICKER_DIM) end,
+			DrawCommand=function(self)
+				local st = side[pn]
+				local status = st and PanelStatus(st)
+				self:visible(status ~= nil and status.sub ~= nil)
+				self:settext(status and status.sub or "")
+			end,
+		},
+		Def.Quad{
+			InitCommand=function(self) self:zoomto(PANEL_W - 40, 1):y(P_RULE_TOP_Y):diffuse(PICKER_RULE) end,
+		},
+		Def.Quad{
+			InitCommand=function(self) self:zoomto(PANEL_W - 40, 1):y(P_RULE_BOT_Y):diffuse(PICKER_RULE) end,
+		},
+		LoadFont("Common Normal")..{
+			Name="Hint",
+			InitCommand=function(self)
+				self:zoom(0.6):y(NAV_ROWS_Y + 40):diffuse(PICKER_DIM):maxwidth((PANEL_W - 40) / 0.6)
+			end,
+			DrawCommand=function(self)
+				local st = side[pn]
+				local hint = st and PanelHint(st)
+				self:visible(hint ~= nil)
+				self:settext(hint or "")
+			end,
+		},
+		LoadFont("Common Normal")..{
+			Name="Footer",
+			InitCommand=function(self) self:zoom(0.6):y(P_FOOTER_Y):diffuse(PICKER_DIM) end,
+			DrawCommand=function(self)
+				local st = side[pn]
+				if st == nil then return end
+				self:settext(PanelFooter(st))
+				self:diffuse(st.finished == "saved" and PICKER_OK or PICKER_DIM)
+			end,
+		},
+	}
+	for i = 1, NAV_VISIBLE do af[#af+1] = PanelRow(pn, i) end
+	return af
+end
+
+
+-- Drawn above everything, like the rest of this module, so it needs no help from
+-- the screen underneath and cannot be covered by it.
+local function Picker()
+	local af = Def.ActorFrame{
+		InitCommand=function(self) self:xy(_screen.cx, _screen.cy):visible(false) end,
+		ModuleCommand=function(self)
+			-- Leaving the screen with the picker up must not leave input
+			-- redirected, or the next screen is dead to every button.
+			if picker.open then PickerClose() end
+			picker.pending = nil
+			self:visible(false)
+
+			-- Registered per screen instance, so each visit gets exactly one.
+			local screen = SCREENMAN:GetTopScreen()
+			if screen ~= nil and screen.AddInputCallback ~= nil then
+				screen:AddInputCallback(PickerInput)
+			end
+		end,
+		GotempoPickerOpenMessageCommand=function(self)
+			-- Not opened here. The sort menu's own DirectInputToEngine is queued
+			-- behind this and un-redirects input on its way out, so a redirect
+			-- set now would simply be undone. The guard below picks this up on
+			-- its next beat, by which time that has run.
+			picker.pending = true
+		end,
+		OpenCommand=function(self)
+			picker.pending = nil
+			PickerOpen()
+			self:visible(picker.open)
+			if picker.open then self:playcommand("Draw") end
+		end,
+		GotempoPickerChangedMessageCommand=function(self)
+			self:visible(picker.open)
+			self:playcommand("Draw")
+		end,
+		PollCommand=function(self)
+			if not picker.open then return end
+			PickerPoll()
+			self:playcommand("Draw")
+		end,
+	}
+
+	-- One panel per side, on that side's half of the screen. A lone player keeps
+	-- their own side rather than being centred, which says whose it is without
+	-- needing a label.
+	for pn = 1, 2 do
+		local panel = Panel(pn)
+		panel.InitCommand = function(self)
+			self:x(pn == 1 and -(PANEL_W + PANEL_GAP) / 2 or (PANEL_W + PANEL_GAP) / 2)
+		end
+		af[#af+1] = panel
+	end
+
+	-- Two independent chains, each on its own actor. sleep() queues per actor,
+	-- so running both on the frame above would make each wait on the other.
+	af[#af+1] = Def.Actor{
+		Name="Clock",
+		ModuleCommand=function(self) self:stoptweening():queuecommand("Tick") end,
+		TickCommand=function(self)
+			self:GetParent():playcommand("Poll")
+			self:sleep(POLL_SECONDS):queuecommand("Tick")
+		end,
+	}
+	af[#af+1] = Def.Actor{
+		Name="Guard",
+		ModuleCommand=function(self) self:stoptweening():queuecommand("Beat") end,
+		BeatCommand=function(self)
+			if picker.pending ~= nil then
+				self:GetParent():playcommand("Open")
+			elseif picker.open then
+				-- Reasserted rather than set once: anything else on the screen
+				-- can hand input back, and a stray call mid-pick would put the
+				-- music wheel under a menu the player thinks is modal.
+				PickerRedirect(true)
+			end
+			self:sleep(PICKER_GUARD):queuecommand("Beat")
+		end,
+	}
+	return af
+end
+
+
+-- The sort menu is a supported extension point: custom_functions is declared on
+-- the SortMenu actor and dispatched as the last case of its Start handler, in
+-- stock Simply Love as well as this fork.  So the entry costs no theme edit.
+-- ArrowCloud.lua does the same thing, and this follows its shape.
+local function InstallSortMenuEntry(self)
+	local top = SCREENMAN:GetTopScreen()
+	if top == nil or top:GetName() ~= "ScreenSelectMusic" then return end
+
+	local overlay = top:GetChild("Overlay")
+	local sortmenu = overlay and overlay:GetChild("SortMenu")
+	if sortmenu == nil then
+		-- The overlay is not built yet; a module's ModuleCommand can beat it.
+		self:sleep(0.15):queuecommand("InstallSortMenu")
+		return
+	end
+
+	sortmenu.custom_functions = sortmenu.custom_functions or {}
+	sortmenu.custom_functions[SORTMENU_BOTTOM] = function(event)
+		local screen = SCREENMAN:GetTopScreen()
+		local ov = screen and screen:GetChild("Overlay")
+		if ov ~= nil then ov:queuecommand("DirectInputToEngine") end
+		MESSAGEMAN:Broadcast("GotempoPickerOpen", { PlayerNumber = event and event.PlayerNumber })
+	end
+
+	if sortmenu.wheel_options == nil then return end
+
+	-- Prefer the Advanced submenu, where the other per-player logins live.
+	local menu = sortmenu.wheel_options
+	for _, option in ipairs(sortmenu.wheel_options) do
+		if option[1] and option[1][2] == "CategoryAdvanced" and type(option[2]) == "table" then
+			menu = option[2]
+			break
+		end
+	end
+
+	-- custom_functions is file-scope in the theme and survives screen changes,
+	-- so this runs again on every visit and must not stack up entries.
+	for _, option in ipairs(menu) do
+		if option[1] and option[1][1] == SORTMENU_TOP and option[1][2] == SORTMENU_BOTTOM then
+			return
+		end
+	end
+	table.insert(menu, { { SORTMENU_TOP, SORTMENU_BOTTOM } })
+end
+
+
 local function EvalGraph()
 	local af = Def.ActorFrame{
 		ModuleCommand=function(self) WatchToggle() end,
@@ -1188,7 +2101,18 @@ local function StatusHearts()
 	return Def.ActorFrame{ StatusHeart(1), StatusHeart(2) }
 end
 
-t.ScreenSelectMusic = Def.ActorFrame{ PublishOnly(), StatusHearts() }
+t.ScreenSelectMusic = Def.ActorFrame{
+	-- Above the other modules on this screen: they are all siblings under one
+	-- frame, and without this the picker draws under whichever module loaded
+	-- after gotempo.
+	InitCommand=function(self) self:draworder(PICKER_DRAW_ORDER) end,
+	ModuleCommand=function(self) self:queuecommand("InstallSortMenu") end,
+	InstallSortMenuCommand=function(self) InstallSortMenuEntry(self) end,
+
+	PublishOnly(),
+	StatusHearts(),
+	Picker(),
+}
 for _, screen in ipairs(STATUS_HEART_SCREENS) do
 	if t[screen] == nil then t[screen] = StatusHearts() end
 end
