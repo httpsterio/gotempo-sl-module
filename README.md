@@ -51,8 +51,9 @@ The module reads `gotempo/hr.txt` once a second and never writes it. One line:
 154 20260904 52327
 ```
 
-BPM, date, and seconds since midnight, in local time. Write every second even when the BPM
-hasn't changed, or the panel hides after 60 seconds.
+BPM, date, and seconds since midnight, in local time. Write on every reading even when the BPM
+hasn't changed: the timestamp is how the module knows readings are still arriving, and once it
+stops moving for three seconds the panel hides and the song wheel heart dims.
 
 P2 reads `gotempo/hr-p2.txt`, same format. There is no `hr-p1.txt`, so an existing single-player setup
 keeps working untouched.
@@ -240,7 +241,7 @@ position and the heart grows away from them. Enlarging the heart therefore needs
 | `HR_DEFAULT_COLOR` | `"#FF5555"` | The line's colour with no `Color` set. Looked up by hex, so reordering the palette cannot change it |
 | `HR_GRAPH_COLOR` | red | Built from `HR_DEFAULT_COLOR`; overridden per player by `Color` |
 | `HR_GRAPH_TOGGLE` | `"MenuDown"` | Folds the line away at the evaluation screen |
-| `HR_STALE_POLLS` | `3` | Repeated timestamps before the graph stops collecting |
+| `HR_STALE_SECONDS` | `3` | Seconds without a new timestamp before a reading counts as stale: the header heart dims, the gameplay panel hides and the graph stops collecting |
 | `HR_LABEL_ZOOM` | `0.13` | Min/mean/max label size |
 | `HR_LABEL_INSET` | `1` | Labels in from the box's left edge |
 | `HR_LABEL_PAD` | `2` | Inset around the label text, inside its backing |
@@ -262,7 +263,7 @@ position and the heart grows away from them. Enlarging the heart therefore needs
 | `SORTMENU_TOP` / `SORTMENU_BOTTOM` | `"HR Strap Config"` / `"gotempo"` | The sort menu row. The bottom line is also the key the theme dispatches on |
 | `SCAN_ACK_WAIT` | `6` | Seconds to wait for gotempo to acknowledge a scan request before reporting it not running |
 | `SCAN_WAIT` | `45` | Seconds an acknowledged scan may take before the picker reports it did not finish |
-| `DEVICES_MAX_AGE` | `90` | Seconds before a published strap list is ignored |
+| `DEVICES_MAX_AGE` | `60` | Seconds before a published strap list is ignored; matches gotempo, which blanks it at the same age |
 | `PULSE_MAGNITUDE` | `1.15` | Swell per beat |
 | `BG_COLOR` | transparent | |
 | `TEXT_COLOR` | `#ffffff` | |
@@ -270,7 +271,7 @@ position and the heart grows away from them. Enlarging the heart therefore needs
 | `STALE_TEXT` | `"..."` | Shown with no reading |
 | `STALE_ALPHA` | `0.35` | Heart dim with no reading |
 | `MIN_BPM` / `MAX_BPM` | `20` / `999` | Outside this hides the panel |
-| `STALE_AFTER_SECONDS` | `60` | Timestamp age before hiding |
+| `STALE_AFTER_SECONDS` | `60` | Outer limit on a timestamp's age, for a file read once with nothing to compare against. `HR_STALE_SECONDS` is what normally hides a reading |
 | `HIDE_WHEN_STALE` | `true` | `false` shows `STALE_TEXT` instead |
 
 ## Tests

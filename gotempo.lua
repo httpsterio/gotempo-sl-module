@@ -91,7 +91,9 @@ local PLAYERS_FILE = GOTEMPO_DIR .. "players.txt"
 -- token it has not served before, so the line can sit there for as long as the
 -- picker is open, and a retry is simply a new token.
 local DEVICES_FILE = GOTEMPO_DIR .. "devices.txt"
-local DEVICES_MAX_AGE = 90		-- seconds; older than this is not an answer
+-- Seconds before a strap list is ignored.  Matches gotempo's devicesTTL, which
+-- blanks the file at the same age, so neither side outlives the other.
+local DEVICES_MAX_AGE = 60
 
 -- How long the picker waits, in two stages.  gotempo answers a scan request at
 -- once with a stamp marked "scanning", then with the list when the scan is done,
@@ -162,10 +164,17 @@ local HR_MEAN_LINE_H = 0.7
 -- timestamp is the payload, not the bpm -- so a stamp that stops advancing means
 -- nothing arrived.
 --
--- Both clocks tick once a second and neither is synchronised to the other, so
--- seeing the same stamp twice happens while perfectly healthy.  Three in a row
--- does not.
-local HR_STALE_POLLS = 3
+-- Counted in seconds since the stamp last moved rather than in polls, so every
+-- reader agrees however often it asks: the gameplay panel and the song wheel
+-- heart poll once a second, the picker redraws on every button press.  Both
+-- clocks tick once a second and neither is synchronised to the other, so a stamp
+-- that sits still for a second happens while perfectly healthy.  Three does not.
+--
+-- This is what the song wheel heart, the gameplay panel and the picker's status
+-- line all use.  A killed gotempo leaves its last reading in hr.txt, and the
+-- 60-second STALE_AFTER_SECONDS limit alone kept the heart beating for a minute
+-- after it died.
+local HR_STALE_SECONDS = 3
 local HR_GRAPH_GAP = 3			-- seconds of silence that break the line
 
 -- The line is drawn over the density graph, so it can sit on top of the timing
@@ -209,16 +218,15 @@ local HR_THICKNESS_MAX = 4
 local HR_THICKNESS_CHOICES = {}
 for i = 1, 40 do HR_THICKNESS_CHOICES[i] = i / 10 end
 
--- A heart in the corner of every other screen, so the wait for a strap to
--- connect is visible somewhere other than the tray.  Lit and beating when that
--- side's reading is arriving, dim when not: connecting can take a good few
--- seconds and a strap that is asleep or off skin never connects at all, which
--- is otherwise indistinguishable from the module being broken.
+-- A heart per side in the song wheel's header, so the wait for a strap to
+-- connect is visible somewhere other than the tray.  Lit and beating while that
+-- side's readings are arriving, dim within HR_STALE_SECONDS of them stopping:
+-- connecting can take a good few seconds, and a strap that is asleep or off skin
+-- never connects at all, which is otherwise indistinguishable from the module
+-- being broken.
 --
--- One per side, P1 bottom left and P2 bottom right, so two straps can be told
--- apart at a glance.  P1's is always up; P2's would be permanent clutter on a
--- one-strap setup, so it appears only once that side has joined or has a
--- reading of its own.
+-- P1's is always up; P2's would be permanent clutter on a one-strap setup, so it
+-- appears only once that side has joined or has a reading of its own.
 local STATUS_HEART = true
 local STATUS_HEART_SIZE = 14
 
@@ -425,8 +433,8 @@ local HIDE_WHEN_STALE = true
 -- file-scope values because both panels live in one module: a single `bpm` would
 -- have the two of them overwrite each other every poll.
 local state = {
-	{ bpm=nil, pulseBpm=nil, geo=nil, file=HR_FILES[1], samples={}, stamp=nil, repeats=0 },
-	{ bpm=nil, pulseBpm=nil, geo=nil, file=HR_FILES[2], samples={}, stamp=nil, repeats=0 },
+	{ bpm=nil, pulseBpm=nil, geo=nil, file=HR_FILES[1], samples={} },
+	{ bpm=nil, pulseBpm=nil, geo=nil, file=HR_FILES[2], samples={} },
 }
 
 
@@ -498,6 +506,28 @@ local function ReadHeartRate(path)
 	end
 
 	return value, stamp
+end
+
+
+-- When each side's stamp was last seen to change, on the game's uptime clock.
+-- Shared by every reader, so asking twice in one second does not count as a
+-- reading going stale.
+local stampSeen = { {}, {} }
+
+-- This side's heart rate, or nil once hr.txt has stopped being rewritten for
+-- HR_STALE_SECONDS.  A file with no stamp (an older writer) cannot go stale this
+-- way and is trusted as it stands.
+local function FreshHeartRate(pn)
+	local bpm, stamp = ReadHeartRate(HR_FILES[pn])
+	if bpm == nil or stamp == nil then return bpm end
+
+	local now = GetTimeSinceStart()
+	local seen = stampSeen[pn]
+	if seen.stamp ~= stamp then
+		seen.stamp, seen.changedAt = stamp, now
+	end
+	if now - seen.changedAt > HR_STALE_SECONDS then return nil end
+	return bpm
 end
 
 
@@ -967,7 +997,6 @@ local function Panel(pn)
 			state[pn].bpm = nil
 			state[pn].pulseBpm = nil
 			state[pn].samples = {}	-- one song's worth; the graph reads it on evaluation
-			state[pn].stamp, state[pn].repeats = nil, 0
 
 			-- Stay hidden until the first Tick has actually read the file, so
 			-- entering gameplay never flashes a frame of placeholder text.
@@ -1342,7 +1371,7 @@ local function EvalLabel(index)
 end
 
 
--- The corner heart.  It reads the same files the panels do, so it reports what
+-- The header heart.  It reads the same files the panels do, so it reports what
 -- would actually be drawn rather than what gotempo thinks it is connected to: a
 -- strap that is connected but sending nothing leaves this dim, which is the
 -- honest answer.
@@ -1366,7 +1395,7 @@ local function StatusHeart(pn)
 				self:sleep(POLL_SECONDS):queuecommand("Beat")
 				return
 			end
-			local bpm = ReadHeartRate(HR_FILES[pn])
+			local bpm = FreshHeartRate(pn)
 			live = bpm ~= nil
 			self:visible(pn == 1 or live or GAMESTATE:IsSideJoined(SIDES[pn]))
 
@@ -1486,6 +1515,33 @@ local LIST_ROWS_Y = -76
 local P_RULE_BOT_Y = 152
 local P_FOOTER_Y = 172
 local P_GUTTER = 18			-- fixed, so the marker never shifts the text
+
+-- The cursor, the adjuster arrows and the status mark are drawn larger than the
+-- text beside them: at the text's own size these punctuation glyphs read as
+-- specks.  Each is its own actor so it can be sized separately.  Bitmap glyphs
+-- sit on a different baseline at a different zoom, so each has a vertical nudge
+-- to centre it on its row; tune these by eye.
+--
+-- The adjuster column is laid out from the panel's right edge inward: the swatch
+-- gets a fixed slot at the far right, and the right-hand arrow of every adjuster
+-- row ends at the same x, so the colour and thickness rows line up whatever the
+-- colour's name.  The thickness row leaves the swatch slot empty.
+--
+-- One table rather than a local each: Lua 5.1 allows 200 locals in a scope, the
+-- module's top level is close to that, and past it the game refuses to load the
+-- module at all.
+local PICKER_SIZES = {
+	-- Measured off a screenshot: at zoom 1 the arrow glyphs' ink sits about a
+	-- unit below their box centre, and the bullet's about 1.2 units above it.
+	-- These nudges put the ink level with the row text at the zooms given.
+	markerZoom = 1.4, markerY = -0.5,
+	arrowZoom = 1.4,  arrowY = -0.4,
+	markZoom = 1.2,   markY = 1.6,
+	swatchW = 24,     swatchH = 12,	-- 2:1
+	arrowGap = 6,
+}
+PICKER_SIZES.swatchX = PANEL_W/2 - 16 - PICKER_SIZES.swatchW/2
+PICKER_SIZES.arrowRight = PANEL_W/2 - 16 - PICKER_SIZES.swatchW - 10
 
 local NAV_ROW_H = 30
 local NAV_VISIBLE = 8
@@ -1907,7 +1963,7 @@ local function PickerPanelStatus(st)
 	if st.dirty then
 		return { mark = "•", text = name, ink = "text", sub = "saves on exit" }
 	end
-	local bpm = ReadHeartRate(HR_FILES[st.pn])
+	local bpm = FreshHeartRate(st.pn)
 	if bpm ~= nil then
 		return { mark = "•", text = name, ink = "ok", sub = bpm .. " bpm" }
 	end
@@ -1978,12 +2034,12 @@ local function PickerPanelRow(pn, index)
 		LoadFont("Common Normal")..{
 			Name="Marker",
 			InitCommand=function(self)
-				self:halign(0):zoom(0.6):x(-PANEL_W/2 + 14):settext("›")
+				self:halign(0):zoom(PICKER_SIZES.markerZoom):x(-PANEL_W/2 + 14):settext("›")
 			end,
 			FillCommand=function(self, p)
 				self:visible(not p.row.divider and p.at == p.st.cursor)
 				self:diffuse(PICKER_SEL)
-				self:y((p.st.mode == "list") and -10 or 0)
+				self:y(((p.st.mode == "list") and -10 or 0) + PICKER_SIZES.markerY)
 			end,
 		},
 		LoadFont("Common Normal")..{
@@ -2001,26 +2057,48 @@ local function PickerPanelRow(pn, index)
 				self:y((p.st.mode == "list") and -10 or 0)
 			end,
 		},
-		LoadFont("Common Normal")..{
-			Name="Value",
-			InitCommand=function(self) self:halign(1):zoom(0.65):x(PANEL_W/2 - 16) end,
+		-- ‹ value ›, laid out right to left from a fixed right-hand arrow, so the
+		-- arrow ends line up between rows.  One frame positions all three,
+		-- since each position depends on the width of the piece to its right.
+		Def.ActorFrame{
+			Name="Adjuster",
 			FillCommand=function(self, p)
 				local value = RowValue(p.st, p.row)
 				self:visible(value ~= nil)
 				if value == nil then return end
-				self:settext("‹ " .. value .. " ›")
-				self:diffuse(p.at == p.st.cursor and PICKER_SEL or Ink(p.st, "dim"))
-				-- Names vary in width, so the swatch follows the text rather than
-				-- sitting at a fixed x that a long name would run into.
-				local swatch = self:GetParent():GetChild("Swatch")
-				if swatch ~= nil then
-					swatch:x(PANEL_W/2 - 16 - self:GetZoomedWidth() - 12)
-				end
+
+				local ink = (p.at == p.st.cursor) and PICKER_SEL or Ink(p.st, "dim")
+				local right = self:GetChild("Right")
+				local text = self:GetChild("Value")
+				local left = self:GetChild("Left")
+
+				right:diffuse(ink):x(PICKER_SIZES.arrowRight)
+				text:settext(value):diffuse(ink)
+				text:x(PICKER_SIZES.arrowRight - right:GetZoomedWidth() - PICKER_SIZES.arrowGap)
+				left:diffuse(ink)
+				left:x(text:GetX() - text:GetZoomedWidth() - PICKER_SIZES.arrowGap)
 			end,
+
+			LoadFont("Common Normal")..{
+				Name="Left",
+				InitCommand=function(self)
+					self:halign(1):zoom(PICKER_SIZES.arrowZoom):y(PICKER_SIZES.arrowY):settext("‹")
+				end,
+			},
+			LoadFont("Common Normal")..{
+				Name="Value",
+				InitCommand=function(self) self:halign(1):zoom(0.65) end,
+			},
+			LoadFont("Common Normal")..{
+				Name="Right",
+				InitCommand=function(self)
+					self:halign(1):zoom(PICKER_SIZES.arrowZoom):y(PICKER_SIZES.arrowY):settext("›")
+				end,
+			},
 		},
 		Def.Quad{
 			Name="Swatch",
-			InitCommand=function(self) self:zoomto(12, 12):x(PANEL_W/2 - 118) end,
+			InitCommand=function(self) self:zoomto(PICKER_SIZES.swatchW, PICKER_SIZES.swatchH):x(PICKER_SIZES.swatchX) end,
 			FillCommand=function(self, p)
 				self:visible(p.row.adjust == "color")
 				if p.row.adjust == "color" then
@@ -2082,13 +2160,29 @@ local function PickerPanel(pn)
 		LoadFont("Common Normal")..{
 			Name="Status",
 			InitCommand=function(self)
-				self:zoom(0.78):y(P_STATUS_Y):maxwidth((PANEL_W - 40) / 0.78)
+				self:halign(0):zoom(0.78):y(P_STATUS_Y):maxwidth((PANEL_W - 70) / 0.78)
 			end,
 			DrawCommand=function(self)
 				local st = side[pn]
 				if st == nil then return end
 				local status = PickerPanelStatus(st)
-				self:settext(status.mark .. "  " .. status.text):diffuse(Ink(st, status.ink))
+				local ink = Ink(st, status.ink)
+				self:settext(status.text):diffuse(ink)
+
+				-- Centre mark and text as one unit, since the mark is drawn at
+				-- its own size and the text's width varies.
+				local mark = self:GetParent():GetChild("StatusMark")
+				mark:settext(status.mark):diffuse(ink)
+				local gap = 8
+				local total = mark:GetZoomedWidth() + gap + self:GetZoomedWidth()
+				mark:x(-total / 2)
+				self:x(-total / 2 + mark:GetZoomedWidth() + gap)
+			end,
+		},
+		LoadFont("Common Normal")..{
+			Name="StatusMark",
+			InitCommand=function(self)
+				self:halign(0):zoom(PICKER_SIZES.markZoom):y(P_STATUS_Y + PICKER_SIZES.markY)
 			end,
 		},
 		LoadFont("Common Normal")..{
@@ -2359,23 +2453,11 @@ t.ScreenGameplay = Def.ActorFrame{
 		local second = GAMESTATE:GetCurMusicSeconds()
 		for pn = 1, 2 do
 			local s = state[pn]
-			local stamp
-			s.bpm, stamp = nil, nil
-			if s.geo ~= nil then s.bpm, stamp = ReadHeartRate(s.file) end
-
-			-- A stamp that has not moved means no reading arrived since the last
-			-- poll. The panel keeps showing the last value, which is deliberate
-			-- and harmless for a second or two on screen; the graph is a record,
-			-- so it holds a stricter line and simply stops collecting.
-			if stamp ~= nil and stamp == s.stamp then
-				s.repeats = s.repeats + 1
-			else
-				s.repeats = 0
-			end
-			s.stamp = stamp
-
-			local fresh = s.bpm ~= nil and s.repeats < HR_STALE_POLLS
-			if HR_GRAPH and fresh and second ~= nil then
+			-- A stale reading comes back nil, so the panel hides (HIDE_WHEN_STALE)
+			-- and the graph stops collecting at the same moment, about three
+			-- seconds after readings stop.
+			s.bpm = (s.geo ~= nil) and FreshHeartRate(pn) or nil
+			if HR_GRAPH and s.bpm ~= nil and second ~= nil then
 				s.samples[#s.samples+1] = { t=second, bpm=s.bpm }
 			end
 		end

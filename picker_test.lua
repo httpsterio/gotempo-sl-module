@@ -3,7 +3,7 @@
 -- gotempo.lua, so these cannot drift from the source.
 
 local fakeFile, today, nowSecs = nil, 20260912, 45000
-DEVICES_FILE, DEVICES_MAX_AGE, SCAN_WAIT = "devices.txt", 90, 20
+DEVICES_FILE, DEVICES_MAX_AGE, SCAN_WAIT = "devices.txt", 60, 20
 PROFILE_INI, PROFILE_SECTION, PROFILE_KEY = "gotempo.ini", "gotempo", "Device"
 PROFILE_KEY_COLOR, PROFILE_KEY_THICKNESS = "Color", "Thickness"
 PROFILE_SLOTS = { "ProfileSlot_Player1", "ProfileSlot_Player2" }
@@ -177,6 +177,41 @@ uptime = 102; PickerPoll()
 fakeFile = ""
 uptime = 110; PickerPoll()
 check(side[1].mode == "scanning", "a blanked file after acknowledgement keeps waiting")
+
+-- ── when a reading counts as live ───────────────────────────────────────────
+group("a reading goes stale three seconds after it stops changing")
+
+do
+	HR_FILES = { "hr.txt", "hr-p2.txt" }
+	MIN_BPM, MAX_BPM, STALE_AFTER_SECONDS, HR_STALE_SECONDS = 20, 999, 60, 3
+	stampSeen = { {}, {} }
+
+	fakeFile = "72 20260912 44990"
+	uptime = 100
+	check(FreshHeartRate(1) == 72, "a new reading is live")
+	uptime = 102
+	check(FreshHeartRate(1) == 72, "still live two seconds on")
+	uptime = 104
+	check(FreshHeartRate(1) == nil, "stale once the stamp has not moved for more than three seconds")
+
+	fakeFile = "73 20260912 44995"
+	uptime = 105
+	check(FreshHeartRate(1) == 73, "a moved stamp is live again at once")
+
+	-- The picker redraws on every button press; asking often must not age it.
+	for _ = 1, 20 do FreshHeartRate(1) end
+	check(FreshHeartRate(1) == 73, "many reads within a second do not count as staleness")
+
+	-- Sides are tracked separately.
+	check(FreshHeartRate(2) == 73, "the other side has its own clock")
+
+	fakeFile = "80"
+	uptime = 500
+	check(FreshHeartRate(1) == 80, "a file with no stamp cannot go stale this way")
+
+	fakeFile = nil
+	uptime = 0
+end
 
 -- ── how often the profile ini is read ───────────────────────────────────────
 group("reading profiles once, not every second")

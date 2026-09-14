@@ -31,7 +31,7 @@ names = ["ReadDevices", "StrapOwners", "PickerRows", "SideRows", "ShowNav",
          "ParseThickness", "ProfileStyle", "ColorIndex", "ColorPool",
          "AssignColors", "Adjust", "GiveUpScan", "PickerPoll",
          "ForgetProfileDevices", "RememberProfileDevice", "ProfileDevice",
-         "PlayerLines", "WritePlayers"]
+         "PlayerLines", "WritePlayers", "ReadHeartRate", "FreshHeartRate"]
 out = ["-- generated: real function bodies lifted from gotempo.lua"]
 for n in names:
     out.append(grab(n).replace("local function ", "function ", 1))
@@ -48,6 +48,18 @@ if clashes:
     for name, lines in sorted(clashes.items()):
         print("SHADOWED: %s defined at lines %s" % (name, ", ".join(map(str, lines))))
     raise SystemExit("duplicate top-level function names")
+
+# Lua 5.1 allows 200 locals in one scope. Past that the game refuses to load
+# the module at all; luac5.1 catches it, but only once it has happened, so warn
+# while there is still room to group constants into a table instead.
+count = 0
+for line in src.splitlines():
+    m = re.match(r"^local\s+(?:function\s+\w+|([\w\s,]+?)\s*(?:=|$))", line)
+    if m:
+        count += len([x for x in (m.group(1) or "f").split(",") if x.strip()])
+print("top-level locals: %d / 200" % count)
+if count >= 190:
+    print("WARNING: close to Lua 5.1's limit of 200 locals; group new constants into a table")
 
 io.open(TARGET, "w", encoding="utf-8").write("\n\n".join(out) + "\n")
 print("extracted", len(names), "functions")
