@@ -60,6 +60,13 @@ local HR_FILES = {
 }
 local POLL_SECONDS = 1
 
+-- How often players.txt is rewritten during a song and on the results screen.
+-- Nobody joins, leaves or changes strap there, so only the stamp needs to move,
+-- and gotempo only releases the straps after ten seconds without it.  The song
+-- wheel keeps POLL_SECONDS: profiles change there, and the picker's scan
+-- requests travel in the same file.
+local PUBLISH_IN_SONG_SECONDS = 3
+
 -- Published beside hr.txt for gotempo to read, once a second:
 --
 --	20260908 52327
@@ -493,7 +500,35 @@ local PROFILE_SLOTS = { "ProfileSlot_Player1", "ProfileSlot_Player2" }
 local SIDES = { "PlayerNumber_P1", "PlayerNumber_P2" }
 
 
--- The strap this side's player named in their profile, or nil.  Empty when no
+-- Each side's strap as last read, with the profile folder it was read from.
+--
+-- This used to be read from disk every second on every screen that publishes,
+-- including in the middle of a song, and IniFile logs every read: a session left
+-- hundreds of lines in log.txt, most of them looking for a gotempo.ini that did
+-- not exist.  Now the ini is read once per profile.  The folder path comes from
+-- memory, so comparing it each tick costs nothing, and a different folder --
+-- Switch Profile on the song wheel, a side joining or leaving -- is what triggers
+-- a fresh read.  "No strap" is remembered too, so a missing file is looked for
+-- once rather than every second.
+--
+-- Two things change the file without changing the folder, and both have to
+-- update this explicitly or it goes stale: the picker's Save, which calls
+-- RememberProfileDevice, and a hand edit, picked up because entering the song
+-- wheel forgets everything.
+local strapCache = {}
+
+local function ForgetProfileDevices()
+	strapCache = {}
+end
+
+local function RememberProfileDevice(pn, mac)
+	local dir = PROFILEMAN and PROFILEMAN:GetProfileDir(PROFILE_SLOTS[pn])
+	if dir == nil or #dir == 0 then return end
+	strapCache[pn] = { dir = dir, mac = mac }
+end
+
+
+-- The strap this side's player named in their profile, or nil.  Nil when no
 -- explicit profile is loaded, which is the usual case for a casual player: they
 -- simply get whatever the machine is set to.
 local function ProfileDevice(pn)
@@ -502,11 +537,17 @@ local function ProfileDevice(pn)
 	local dir = PROFILEMAN:GetProfileDir(PROFILE_SLOTS[pn])
 	if not dir or #dir == 0 then return nil end
 
-	local contents = IniFile.ReadFile(dir .. PROFILE_INI)
-	if not contents or not contents[PROFILE_SECTION] then return nil end
+	local hit = strapCache[pn]
+	if hit ~= nil and hit.dir == dir then return hit.mac end
 
-	local mac = contents[PROFILE_SECTION][PROFILE_KEY]
-	if type(mac) ~= "string" or #mac == 0 then return nil end
+	local mac = nil
+	local contents = IniFile.ReadFile(dir .. PROFILE_INI)
+	local section = contents and contents[PROFILE_SECTION]
+	if section ~= nil and type(section[PROFILE_KEY]) == "string" and #section[PROFILE_KEY] > 0 then
+		mac = section[PROFILE_KEY]
+	end
+
+	strapCache[pn] = { dir = dir, mac = mac }
 	return mac
 end
 
@@ -767,14 +808,27 @@ end
 local function CancelScan() scanToken = nil end
 
 
-local function WritePlayers()
-	local lines = { string.format("%04d%02d%02d %d",
-		Year(), MonthOfYear() + 1, DayOfMonth(), secondsOfDay()) }
-
+-- One "pN <mac>" line per joined side, "-" for a side that named no strap.
+local function PlayerLines()
+	local lines = {}
 	for pn = 1, 2 do
 		if GAMESTATE:IsSideJoined(SIDES[pn]) then
 			lines[#lines+1] = string.format("p%d %s", pn, ProfileDevice(pn) or "-")
 		end
+	end
+	return lines
+end
+
+
+-- frozen, when given, is a PlayerLines() result taken when the screen opened.
+-- Screens where nobody can join or change strap pass it, so a tick there only
+-- stamps the file rather than asking who is playing.
+local function WritePlayers(frozen)
+	local lines = { string.format("%04d%02d%02d %d",
+		Year(), MonthOfYear() + 1, DayOfMonth(), secondsOfDay()) }
+
+	for _, line in ipairs(frozen or PlayerLines()) do
+		lines[#lines+1] = line
 	end
 	if scanToken ~= nil then
 		lines[#lines+1] = string.format("scan %d", scanToken)
@@ -1539,6 +1593,9 @@ end
 
 local function SaveSide(st)
 	WriteProfileSettings(st.pn, st)
+	-- The folder does not change when its ini does, so the cached strap would
+	-- otherwise go on publishing the old one.
+	RememberProfileDevice(st.pn, st.device)
 	st.dirty = false
 	FinishSide(st, "saved")
 end
@@ -2237,15 +2294,25 @@ local t = {}
 
 -- The outer frame owns the poll for both panels: one timer reading both files
 -- per tick, rather than two sleep chains drifting against each other.
+-- The players cannot change mid-song, so their lines are taken once when the
+-- song starts and the file is only restamped every PUBLISH_IN_SONG_SECONDS.
+-- Each tick's disk work is then one hr.txt read per player.
+local songPlayers, songPublishedAt = nil, nil
+
 t.ScreenGameplay = Def.ActorFrame{
 	ModuleCommand=function(self)
 		self:stoptweening()
+		songPlayers, songPublishedAt = PlayerLines(), nil
 		self:playcommand("Setup")
 		self:queuecommand("Tick")
 	end,
 
 	TickCommand=function(self)
-		WritePlayers()
+		local now = GetTimeSinceStart()
+		if songPublishedAt == nil or now - songPublishedAt >= PUBLISH_IN_SONG_SECONDS then
+			WritePlayers(songPlayers)
+			songPublishedAt = now
+		end
 		local second = GAMESTATE:GetCurMusicSeconds()
 		for pn = 1, 2 do
 			local s = state[pn]
@@ -2282,15 +2349,23 @@ t.ScreenGameplay = Def.ActorFrame{
 -- connect, so gotempo has to be told who is playing before the first note, not
 -- as it arrives.  The evaluation screens keep the stamp alive between songs so
 -- the straps are not released and reacquired every round.
-local function PublishOnly()
+-- Keeps players.txt stamped on a screen that draws nothing of its own.
+--
+-- live is for the song wheel, where profiles change and the picker needs a fast
+-- tick for its scan requests: the players are looked up every POLL_SECONDS.
+-- Without it -- the results screens -- they are taken once when the screen opens
+-- and the file is restamped every PUBLISH_IN_SONG_SECONDS.
+local function PublishOnly(live)
+	local frozen = nil
 	return Def.ActorFrame{
 		ModuleCommand=function(self)
 			self:stoptweening()
+			frozen = (not live) and PlayerLines() or nil
 			self:queuecommand("Tick")
 		end,
 		TickCommand=function(self)
-			WritePlayers()
-			self:sleep(POLL_SECONDS):queuecommand("Tick")
+			WritePlayers(frozen)
+			self:sleep(live and POLL_SECONDS or PUBLISH_IN_SONG_SECONDS):queuecommand("Tick")
 		end,
 	}
 end
@@ -2304,10 +2379,16 @@ t.ScreenSelectMusic = Def.ActorFrame{
 	-- frame, and without this the picker draws under whichever module loaded
 	-- after gotempo.
 	InitCommand=function(self) self:draworder(PICKER_DRAW_ORDER) end,
-	ModuleCommand=function(self) self:queuecommand("InstallSortMenu") end,
+	ModuleCommand=function(self)
+		-- The one place profiles are re-read from scratch, so a gotempo.ini
+		-- edited by hand is picked up by the next visit to the wheel.  Runs
+		-- before the children's, so their first tick already reads fresh.
+		ForgetProfileDevices()
+		self:queuecommand("InstallSortMenu")
+	end,
 	InstallSortMenuCommand=function(self) InstallSortMenuEntry(self) end,
 
-	PublishOnly(),
+	PublishOnly(true),
 	StatusHearts(),
 	Picker(),
 }

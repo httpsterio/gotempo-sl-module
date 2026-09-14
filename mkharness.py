@@ -13,15 +13,25 @@ TARGET = os.path.join(HERE, "extracted.lua")
 src = io.open(SOURCE, encoding="utf-8").read()
 
 def grab(name):
+    # A one-line function has its own end on the same line. Matching it as a
+    # multi-line one would run on to the next function's end and swallow that
+    # function as a local, which then shadows the real one.
+    one = re.search(r"^local function %s\([^\n]*\bend$" % re.escape(name), src, re.M)
+    if one:
+        return one.group(0)
     m = re.search(r"^local function %s\(.*?^end$" % re.escape(name), src, re.M | re.S)
     assert m, "could not extract " + name
-    return m.group(0)
+    body = m.group(0)
+    assert body.count("\nlocal function ") == 0, "extracting %s ran into the next function" % name
+    return body
 
 names = ["ReadDevices", "StrapOwners", "PickerRows", "SideRows", "ShowNav",
          "FinishSide", "SaveSide", "Confirm", "Move", "PickerAllDone",
          "SameMAC", "WriteProfileSettings", "NormalizeHex", "ParseColor",
          "ParseThickness", "ProfileStyle", "ColorIndex", "ColorPool",
-         "AssignColors", "Adjust", "GiveUpScan", "PickerPoll"]
+         "AssignColors", "Adjust", "GiveUpScan", "PickerPoll",
+         "ForgetProfileDevices", "RememberProfileDevice", "ProfileDevice",
+         "PlayerLines", "WritePlayers"]
 out = ["-- generated: real function bodies lifted from gotempo.lua"]
 for n in names:
     out.append(grab(n).replace("local function ", "function ", 1))

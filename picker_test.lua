@@ -31,14 +31,23 @@ function GetTimeSinceStart() return uptime end
 function CancelScan() end
 function color(hex) return { hex = hex } end
 
+local lastWrite = nil
 RageFileUtil = { CreateRageFile = function()
 	return {
-		Open = function(_, _, _) return fakeFile ~= nil end,
+		Open = function(_, _, mode) return mode == 2 or fakeFile ~= nil end,
 		Read = function() return fakeFile end,
+		Write = function(_, text) lastWrite = text end,
 		Close = function() end,
 		destroy = function() end,
 	}
 end }
+local joined = { true, false }
+GAMESTATE = { IsSideJoined = function(_, side) return joined[side == "PlayerNumber_P1" and 1 or 2] end }
+function Year() return 2026 end
+function MonthOfYear() return 8 end
+function DayOfMonth() return 12 end
+PLAYERS_FILE = "players.txt"
+scanToken = nil
 
 local profiles, written = {}, {}
 PROFILEMAN = {
@@ -48,8 +57,10 @@ PROFILEMAN = {
 	LocalProfileIDToDir = function(_, id) return profiles[tonumber(id)+1].dir end,
 	GetProfileDir = function(_, slot) return slot == PROFILE_SLOTS[1] and "/p1/" or "/p2/" end,
 }
+local iniReads = 0
 IniFile = {
 	ReadFile = function(path)
+		iniReads = iniReads + 1
 		for _, p in ipairs(profiles) do
 			if path == p.dir .. PROFILE_INI then return p.ini end
 		end
@@ -166,6 +177,85 @@ uptime = 102; PickerPoll()
 fakeFile = ""
 uptime = 110; PickerPoll()
 check(side[1].mode == "scanning", "a blanked file after acknowledgement keeps waiting")
+
+-- ── how often the profile ini is read ───────────────────────────────────────
+group("reading profiles once, not every second")
+
+do
+	local savedProfiles, savedDir = profiles, PROFILEMAN.GetProfileDir
+	local dirFor = { "/a/", "/b/" }
+	PROFILEMAN.GetProfileDir = function(_, slot)
+		return slot == PROFILE_SLOTS[1] and dirFor[1] or dirFor[2]
+	end
+	profiles = {
+		{ dir = "/a/", name = "http", ini = { gotempo = { Device = "24:AC:AC:18:41:CC" } } },
+		{ dir = "/c/", name = "other", ini = { gotempo = { Device = "11:22:33:44:55:66" } } },
+	}
+
+	ForgetProfileDevices()
+	iniReads = 0
+	check(ProfileDevice(1) == "24:AC:AC:18:41:CC", "the strap is read")
+	for _ = 1, 10 do ProfileDevice(1) end
+	check(iniReads == 1, "ten more ticks with the same profile do not touch the disk")
+
+	-- Switch Profile on the song wheel: same slot, different folder.
+	dirFor[1] = "/c/"
+	check(ProfileDevice(1) == "11:22:33:44:55:66", "a different profile is noticed")
+	check(iniReads == 2, "and read exactly once")
+
+	-- A profile with no gotempo.ini is looked for once, not every second.
+	dirFor[1] = "/nothing/"
+	iniReads = 0
+	check(ProfileDevice(1) == nil, "no ini means no strap")
+	for _ = 1, 10 do ProfileDevice(1) end
+	check(iniReads == 1, "a missing ini is not looked for again")
+
+	-- The picker's Save changes the file but not the folder.
+	dirFor[1] = "/a/"
+	ProfileDevice(1)
+	iniReads = 0
+	RememberProfileDevice(1, "99:88:77:66:55:44")
+	check(ProfileDevice(1) == "99:88:77:66:55:44", "a saved strap is published at once")
+	check(iniReads == 0, "without reading the file back")
+
+	-- Through Save itself, not just the helper: the picker must refresh the
+	-- cache, or players.txt goes on naming the old strap until the next wheel.
+	ProfileDevice(1)
+	local saver = { pn = 1, profile = true, device = "AA:BB:CC:DD:EE:FF",
+	                originalDevice = "99:88:77:66:55:44", touched = {}, rows = {} }
+	SaveSide(saver)
+	check(ProfileDevice(1) == "AA:BB:CC:DD:EE:FF", "saving in the picker publishes the new strap at once")
+	-- Save wrote through the stub into P1's stored ini; put it back.
+	profiles[1].ini.gotempo.Device = "24:AC:AC:18:41:CC"
+
+	-- Entering the song wheel forgets, so a hand edit is picked up there.
+	iniReads = 0
+	ForgetProfileDevices()
+	ProfileDevice(1)
+	check(iniReads == 1, "forgetting forces one fresh read")
+
+	-- During a song the lines are frozen: a tick only stamps the file.
+	joined = { true, true }
+	dirFor[2] = "/nothing/"
+	ForgetProfileDevices()
+	local frozen = PlayerLines()
+	iniReads = 0
+	for _ = 1, 5 do WritePlayers(frozen) end
+	check(iniReads == 0, "ticks with frozen lines read no profile")
+	check(lastWrite:find("p1 24:AC:AC:18:41:CC", 1, true) ~= nil, "and still publish P1's strap")
+	check(lastWrite:find("p2 -", 1, true) ~= nil, "and P2 as joined with none")
+	check(lastWrite:match("^20260912 %d+\n") ~= nil, "under a fresh stamp")
+
+	-- Frozen means frozen: a side leaving mid-song does not change what is
+	-- published, because nothing is looked up.
+	joined = { true, false }
+	WritePlayers(frozen)
+	check(lastWrite:find("p2 -", 1, true) ~= nil, "frozen lines are published even if a lookup would differ")
+
+	joined = { true, false }
+	profiles, PROFILEMAN.GetProfileDir = savedProfiles, savedDir
+	ForgetProfileDevices()
+end
 
 -- ── StrapOwners ─────────────────────────────────────────────────────────────
 group("who already claims what")

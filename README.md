@@ -58,7 +58,8 @@ P2 reads `gotempo/hr-p2.txt`, same format. There is no `hr-p1.txt`, so an existi
 keeps working untouched.
 
 It writes `gotempo/players.txt`, which is how gotempo knows who is playing and therefore which
-strap to connect for each side. Rewritten once a second on song select, gameplay and evaluation:
+strap to connect for each side. Rewritten once a second on the song wheel, and every three seconds
+during a song and on the results screen:
 
 ```
 20260908 52327
@@ -69,6 +70,12 @@ p2 -
 Date and seconds since midnight, then a line per joined side naming that player's strap, or `-`
 if they have none. A side with nobody on it gets no line. gotempo releases the straps when the
 stamp stops advancing, which is what covers the game being closed or killed.
+
+Each player's `gotempo.ini` is read once per profile rather than every second: again when a
+different profile is loaded, including with Switch Profile on the song wheel, after the picker
+saves, and on each visit to the song wheel so a hand edit is picked up. During a song and on the
+results screen the player lines are taken once when the screen opens, so the only file a song
+reads is `hr.txt`.
 
 The strap picker adds a fourth line, `scan <token>`, while it is open. gotempo answers by scanning
 and writing `gotempo/devices.txt`, which the picker reads and which gotempo blanks again about a
@@ -197,6 +204,7 @@ position and the heart grows away from them. Enlarging the heart therefore needs
 | --- | --- | --- |
 | `HR_FILES` | `Modules/gotempo/hr.txt`, `hr-p2.txt` | Files to read, P1 and P2 |
 | `POLL_SECONDS` | `1` | Read interval |
+| `PUBLISH_IN_SONG_SECONDS` | `3` | How often `players.txt` is restamped in a song and on the results screen. Must stay well under gotempo's 10-second timeout |
 | `DEBUG_BG` | `false` | Paint each panel a bright colour and keep it visible with no reading, to see the space it occupies while positioning. Turn off when done |
 | `DEBUG_BG_COLORS` | magenta, cyan | Debug colour per player |
 | `CORNER_SIDE` | `"auto"` | One player only: `auto`, `left` or `right` |
