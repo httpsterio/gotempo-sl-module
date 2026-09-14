@@ -85,7 +85,16 @@ local PLAYERS_FILE = GOTEMPO_DIR .. "players.txt"
 -- picker is open, and a retry is simply a new token.
 local DEVICES_FILE = GOTEMPO_DIR .. "devices.txt"
 local DEVICES_MAX_AGE = 90		-- seconds; older than this is not an answer
-local SCAN_WAIT = 20			-- seconds before giving up on gotempo
+
+-- How long the picker waits, in two stages.  gotempo answers a scan request at
+-- once with a stamp marked "scanning", then with the list when the scan is done,
+-- about fifteen seconds later.  No acknowledgement within SCAN_ACK_WAIT means
+-- gotempo is not there.  An acknowledged scan that has not finished by SCAN_WAIT
+-- means the adapter is stuck, which is a different problem and says so.  Before
+-- the acknowledgement existed there was one twenty-second wait against a
+-- fifteen-second scan, and a slow adapter was reported as gotempo not running.
+local SCAN_ACK_WAIT = 6
+local SCAN_WAIT = 45
 
 -- The sort menu row, as {toptext, bottomtext}.  The bottom line is the larger of
 -- the two, so the name goes there and the description sits above it.
@@ -573,11 +582,18 @@ end
 -- unused.  This puts it in the game: open the sort menu, pick your strap off a
 -- list, and it is written into your own profile.
 
--- ReadDevices returns gotempo's answer as {mac=, name=}, newest first by MAC
--- order, or nil when there is no usable answer yet.  Empty is not nil: gotempo
--- blanks the file about a minute after publishing, and an empty file means "the
--- list has expired", not "still waiting".
-local function ReadDevices()
+-- ReadDevices reports what gotempo has said about the request made at `since`
+-- (seconds of day), as a status and, once ready, the list as {mac=, name=}:
+--
+--	nil          nothing usable for this request yet
+--	"scanning"   gotempo has the request and is scanning
+--	"ready"      the list, possibly empty
+--
+-- Anything stamped before `since` belongs to an earlier request.  Without that
+-- check a rescan returned the previous list at once, since it stays in the file
+-- for a minute.  A request straddling midnight is dated before its answer and so
+-- times out; retrying works.  With `since` nil any fresh stamp is accepted.
+local function ReadDevices(since)
 	local file = RageFileUtil.CreateRageFile()
 	local text = nil
 	if file:Open(DEVICES_FILE, 1) then
@@ -594,13 +610,21 @@ local function ReadDevices()
 
 	-- Same stamp the other two files carry, and rejected the same way: nothing
 	-- in this channel can send a goodbye, so an answer that stopped being
-	-- rewritten has to age out rather than be withdrawn.
-	local date, secs = lines[1]:match("^(%d+)%s+(%d+)$")
+	-- rewritten has to age out rather than be withdrawn.  An optional word after
+	-- it marks the acknowledgement; it goes on this line rather than its own so
+	-- that a 2.0.0 module, which accepts only two numbers here, ignores the file
+	-- instead of listing the word as a strap.
+	local date, secs, word = lines[1]:match("^(%d+)%s+(%d+)%s*(%a*)$")
 	if date == nil then return nil end
 	if tonumber(date) ~= todayStamp() then return nil end
-	local age = secondsOfDay() - tonumber(secs)
+	secs = tonumber(secs)
+	local age = secondsOfDay() - secs
 	if age < 0 then age = 0 end
 	if age > DEVICES_MAX_AGE then return nil end
+	if since ~= nil and secs < since then return nil end
+
+	if word == "scanning" then return "scanning" end
+	if word ~= "" then return nil end
 
 	local out = {}
 	for i = 2, #lines do
@@ -609,7 +633,7 @@ local function ReadDevices()
 			out[#out+1] = { mac = mac, name = (name ~= "" and name or mac) }
 		end
 	end
-	return out
+	return "ready", out
 end
 
 
@@ -1497,8 +1521,12 @@ local function BeginScan(st)
 	st.rows, st.cursor, st.first = {}, 1, 1
 	if not picker.scanning then
 		picker.scanning = true
-		picker.waitUntil = secondsOfDay() + SCAN_WAIT
-		RequestScan()
+		picker.acked = false
+		-- The game's own uptime, not the time of day: a deadline set in the last
+		-- seconds before midnight used to land past a clock that wraps to zero,
+		-- and the spinner never stopped.
+		picker.askedAt = GetTimeSinceStart()
+		picker.since = RequestScan()
 	end
 end
 
@@ -1570,7 +1598,8 @@ local function PickerOpen()
 	end
 
 	picker.open = true
-	picker.devices, picker.owners, picker.scanning, picker.waitUntil = nil, nil, false, nil
+	picker.devices, picker.owners, picker.scanning = nil, nil, false
+	picker.acked, picker.askedAt, picker.since = false, nil, nil
 	PickerRedirect(true)
 
 	-- The wheel may still be coasting from the press that opened the menu.
@@ -1685,7 +1714,7 @@ local function PickerInput(event)
 	elseif b == "Start" then
 		if st.mode == "nav" or st.mode == "list" then
 			Confirm(st)
-		elseif st.mode == "empty" or st.mode == "nogotempo" then
+		elseif st.mode == "empty" or st.mode == "nogotempo" or st.mode == "scantimeout" then
 			picker.devices = nil
 			BeginScan(st)
 		end
@@ -1710,11 +1739,24 @@ end
 
 -- ── polling ─────────────────────────────────────────────────────────────────
 
+-- Ends a scan that is not going to answer, putting every side still waiting on
+-- it into `mode`.
+local function GiveUpScan(mode)
+	picker.scanning = false
+	CancelScan()
+	for _, st in pairs(side) do
+		if st.mode == "scanning" then st.mode = mode end
+	end
+end
+
+
 local function PickerPoll()
 	if not picker.scanning then return end
 
-	local devices = ReadDevices()
-	if devices ~= nil then
+	local status, devices = ReadDevices(picker.since)
+	local waited = GetTimeSinceStart() - (picker.askedAt or 0)
+
+	if status == "ready" then
 		picker.devices = devices
 		picker.owners = StrapOwners()
 		picker.scanning = false
@@ -1724,12 +1766,15 @@ local function PickerPoll()
 				if #devices == 0 then st.mode = "empty" else ShowList(st) end
 			end
 		end
-	elseif secondsOfDay() > (picker.waitUntil or 0) then
-		picker.scanning = false
-		CancelScan()
-		for _, st in pairs(side) do
-			if st.mode == "scanning" then st.mode = "nogotempo" end
-		end
+		return
+	end
+
+	if status == "scanning" then picker.acked = true end
+
+	if not picker.acked and waited > SCAN_ACK_WAIT then
+		GiveUpScan("nogotempo")
+	elseif waited > SCAN_WAIT then
+		GiveUpScan("scantimeout")
 	end
 end
 
@@ -1794,7 +1839,9 @@ local function PickerPanelFooter(st)
 	if st.finished == "exited" then return "Exited without saving" end
 	if st.finished ~= nil then return "" end
 	if st.mode == "scanning" then return "BACK cancel" end
-	if st.mode == "empty" or st.mode == "nogotempo" then return "START retry     BACK back" end
+	if st.mode == "empty" or st.mode == "nogotempo" or st.mode == "scantimeout" then
+		return "START retry     BACK back"
+	end
 	if st.mode == "list" then return "START pick      BACK back" end
 	return "START select"
 end
@@ -1804,6 +1851,7 @@ local function PickerPanelHint(st)
 	if st.mode == "scanning" then return "Scanning for straps…" end
 	if st.mode == "empty" then return "No straps found.\nPut the strap on and make sure\nit is not connected elsewhere." end
 	if st.mode == "nogotempo" then return "gotempo is not running." end
+	if st.mode == "scantimeout" then return "The scan did not finish.\nTry again." end
 	return nil
 end
 

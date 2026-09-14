@@ -23,7 +23,7 @@ to the strap and writes the readings to a file. This module only reads that file
    `gotempo.lua` goes directly in `Modules/`, not in a subfolder. Do not rename `gotempo/heart (mipmaps).png`.
 4. Open the config and set `itgmania_module` to the full path of the copy you just made.
    - Linux: `~/.config/gotempo/config.json`
-   - Windows: `%APPDATA%\gotempo\config.json`
+   - Windows: `%LOCALAPPDATA%\gotempo\config.json`
 
 ```json
    "itgmania_module": "/home/you/.itgmania/Themes/Simply Love/Modules/gotempo.lua"
@@ -74,6 +74,11 @@ The strap picker adds a fourth line, `scan <token>`, while it is open. gotempo a
 and writing `gotempo/devices.txt`, which the picker reads and which gotempo blanks again about a
 minute later. This module has no Bluetooth of its own, so asking is the only way it can find out
 what is in range.
+
+gotempo first writes `devices.txt` with only its stamp and the word `scanning`, before the scan
+starts, then the list about fifteen seconds later. No acknowledgement within a few seconds means
+gotempo is not running; an acknowledged scan that never finishes is reported separately. This
+needs gotempo 2.0.1 or later; with 2.0.0 the picker reports gotempo not running.
 
 ## Profiles
 
@@ -247,7 +252,8 @@ position and the heart grows away from them. Enlarging the heart therefore needs
 | `STATUS_HEART_Y` | `16` | Centre of the 32-unit header bar |
 | `STATUS_HEART_LIVE` / `STATUS_HEART_DEAD` | pink / faint white | Reading arriving, or not |
 | `SORTMENU_TOP` / `SORTMENU_BOTTOM` | `"HR Strap Config"` / `"gotempo"` | The sort menu row. The bottom line is also the key the theme dispatches on |
-| `SCAN_WAIT` | `20` | Seconds the picker waits for gotempo before giving up |
+| `SCAN_ACK_WAIT` | `6` | Seconds to wait for gotempo to acknowledge a scan request before reporting it not running |
+| `SCAN_WAIT` | `45` | Seconds an acknowledged scan may take before the picker reports it did not finish |
 | `DEVICES_MAX_AGE` | `90` | Seconds before a published strap list is ignored |
 | `PULSE_MAGNITUDE` | `1.15` | Swell per beat |
 | `BG_COLOR` | transparent | |

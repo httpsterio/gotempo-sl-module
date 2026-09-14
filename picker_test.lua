@@ -25,6 +25,10 @@ for i = 1, 40 do HR_THICKNESS_CHOICES[i] = i / 10 end
 
 function todayStamp() return today end
 function secondsOfDay() return nowSecs end
+SCAN_ACK_WAIT, SCAN_WAIT = 6, 45
+local uptime = 0
+function GetTimeSinceStart() return uptime end
+function CancelScan() end
 function color(hex) return { hex = hex } end
 
 RageFileUtil = { CreateRageFile = function()
@@ -78,12 +82,35 @@ local function group(name) print(""); print("── " .. name) end
 group("gotempo's device list")
 
 fakeFile = "20260912 44990\n24:AC:AC:18:41:CC\tPolar H10\n11:22:33:44:55:66\tHRM-Dual\n"
-local d = ReadDevices()
-check(d ~= nil and #d == 2, "a fresh list parses")
+local status, d = ReadDevices()
+check(status == "ready" and d ~= nil and #d == 2, "a fresh list parses")
 check(d and d[1].mac == "24:AC:AC:18:41:CC" and d[1].name == "Polar H10", "mac and name split on the tab")
 
 fakeFile = "20260912 44990\nAA:BB:CC:DD:EE:FF\t\n"
-check(ReadDevices()[1].name == "AA:BB:CC:DD:EE:FF", "a nameless strap falls back to its mac")
+check(select(2, ReadDevices())[1].name == "AA:BB:CC:DD:EE:FF", "a nameless strap falls back to its mac")
+
+fakeFile = "20260912 44990\n"
+status, d = ReadDevices()
+check(status == "ready" and #d == 0, "a list with no straps is an answer, not silence")
+
+-- The acknowledgement.
+fakeFile = "20260912 44995 scanning\n"
+check(ReadDevices(44990) == "scanning", "a fresh acknowledgement reads as scanning")
+fakeFile = "20260912 44995 something\n"
+check(ReadDevices() == nil, "an unknown marker is not an answer")
+
+-- The marker sits on the stamp line so a 2.0.0 module ignores the file. That
+-- module accepts only this exact two-number pattern; checked literally here.
+check(("20260912 44995 scanning"):match("^(%d+)%s+(%d+)$") == nil,
+	"a 2.0.0 module's stamp pattern rejects the acknowledgement")
+
+-- Anything stamped before the request belongs to an earlier one. Without this a
+-- rescan returned the previous list at once.
+fakeFile = "20260912 44980\n24:AC:AC:18:41:CC\tPolar H10\n"
+check(ReadDevices(44990) == nil, "a list older than the request is not its answer")
+check(ReadDevices(44980) == "ready", "a list from the request's own second is")
+fakeFile = "20260912 44980 scanning\n"
+check(ReadDevices(44990) == nil, "nor is an old acknowledgement")
 
 fakeFile = "20260911 44990\n24:AC:AC:18:41:CC\tPolar\n"
 check(ReadDevices() == nil, "yesterday's list is rejected")
@@ -95,6 +122,50 @@ fakeFile = nil
 check(ReadDevices() == nil, "a missing file reads as nothing")
 fakeFile = "not a stamp\n24:AC\tPolar\n"
 check(ReadDevices() == nil, "a malformed stamp is rejected")
+
+-- ── waiting for gotempo ─────────────────────────────────────────────────────
+group("waiting for gotempo")
+
+local function scanFrom(askedAt, since)
+	side = { [1] = { pn = 1, profile = true, mode = "scanning", rows = {} } }
+	picker.scanning, picker.acked = true, false
+	picker.askedAt, picker.since = askedAt, since
+end
+
+-- gotempo absent: nothing ever arrives.
+scanFrom(100, 44990)
+fakeFile = nil
+uptime = 104; PickerPoll()
+check(side[1].mode == "scanning", "still waiting inside the acknowledgement window")
+uptime = 107; PickerPoll()
+check(side[1].mode == "nogotempo", "no acknowledgement in time means gotempo is not running")
+
+-- The case this fixes: acknowledged quickly, list arrives after twenty seconds.
+scanFrom(100, 44990)
+fakeFile = "20260912 44991 scanning\n"
+uptime = 102; PickerPoll()
+check(picker.acked, "the acknowledgement is noticed")
+uptime = 121; PickerPoll()
+check(side[1].mode == "scanning", "an acknowledged scan is still waited for past twenty seconds")
+fakeFile = "20260912 45000\n24:AC:AC:18:41:CC\tPolar H10\n"
+listed = 0
+uptime = 122; PickerPoll()
+check(listed == 1 and not picker.scanning, "and its list is accepted when it lands")
+
+-- Acknowledged, then nothing: a stuck adapter, not a missing gotempo.
+scanFrom(100, 44990)
+fakeFile = "20260912 44991 scanning\n"
+uptime = 102; PickerPoll()
+uptime = 146; PickerPoll()
+check(side[1].mode == "scantimeout", "a scan that never finishes says so, not that gotempo is gone")
+
+-- An acknowledgement that has since been blanked is still remembered.
+scanFrom(100, 44990)
+fakeFile = "20260912 44991 scanning\n"
+uptime = 102; PickerPoll()
+fakeFile = ""
+uptime = 110; PickerPoll()
+check(side[1].mode == "scanning", "a blanked file after acknowledgement keeps waiting")
 
 -- ── StrapOwners ─────────────────────────────────────────────────────────────
 group("who already claims what")

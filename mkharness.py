@@ -21,7 +21,7 @@ names = ["ReadDevices", "StrapOwners", "PickerRows", "SideRows", "ShowNav",
          "FinishSide", "SaveSide", "Confirm", "Move", "PickerAllDone",
          "SameMAC", "WriteProfileSettings", "NormalizeHex", "ParseColor",
          "ParseThickness", "ProfileStyle", "ColorIndex", "ColorPool",
-         "AssignColors", "Adjust"]
+         "AssignColors", "Adjust", "GiveUpScan", "PickerPoll"]
 out = ["-- generated: real function bodies lifted from gotempo.lua"]
 for n in names:
     out.append(grab(n).replace("local function ", "function ", 1))
