@@ -441,6 +441,25 @@ local function todayStamp()
 end
 
 
+-- The screen currently on top, by name, or nil.
+--
+-- Every repeating loop in this module checks it.  A module's actors live in the
+-- system layer, which only hides a screen's actors when that screen goes away;
+-- their sleep-and-requeue loops keep running.  So once a player had been through
+-- a song, the gameplay, results and song wheel loops were all ticking at once.
+-- While they all wrote the same thing that only cost disk reads, but once the
+-- in-song loops froze their player list, a stale lineup and the live one
+-- alternated in players.txt and gotempo flipped the claim back and forth every
+-- second or two.  Each loop now records the screen that started it and does no
+-- work while a different one is on top.  It keeps waking, which costs nothing,
+-- so a screen pushed over the song wheel (Switch Profile, song search) pauses
+-- it rather than killing it.
+local function TopScreenName()
+	local top = SCREENMAN and SCREENMAN:GetTopScreen()
+	return top and top:GetName() or nil
+end
+
+
 local function ReadHeartRate(path)
 	local file = RageFileUtil.CreateRageFile()
 	local text = nil
@@ -1328,7 +1347,7 @@ end
 -- strap that is connected but sending nothing leaves this dim, which is the
 -- honest answer.
 local function StatusHeart(pn)
-	local live, pulseAt = false, nil
+	local live, pulseAt, owner = false, nil, nil
 
 	return Def.ActorFrame{
 		InitCommand=function(self)
@@ -1339,9 +1358,14 @@ local function StatusHeart(pn)
 		end,
 		ModuleCommand=function(self)
 			self:stoptweening()
+			owner = TopScreenName()
 			if STATUS_HEART then self:queuecommand("Beat") end
 		end,
 		BeatCommand=function(self)
+			if TopScreenName() ~= owner then
+				self:sleep(POLL_SECONDS):queuecommand("Beat")
+				return
+			end
 			local bpm = ReadHeartRate(HR_FILES[pn])
 			live = bpm ~= nil
 			self:visible(pn == 1 or live or GAMESTATE:IsSideJoined(SIDES[pn]))
@@ -2167,11 +2191,17 @@ local function Picker()
 
 	-- Two independent chains, each on its own actor. sleep() queues per actor,
 	-- so running both on the frame above would make each wait on the other.
+	local owner = nil
 	af[#af+1] = Def.Actor{
 		Name="Clock",
-		ModuleCommand=function(self) self:stoptweening():queuecommand("Tick") end,
+		ModuleCommand=function(self)
+			owner = TopScreenName()
+			self:stoptweening():queuecommand("Tick")
+		end,
 		TickCommand=function(self)
-			self:GetParent():playcommand("Poll")
+			if TopScreenName() == owner then
+				self:GetParent():playcommand("Poll")
+			end
 			self:sleep(POLL_SECONDS):queuecommand("Tick")
 		end,
 	}
@@ -2179,7 +2209,13 @@ local function Picker()
 		Name="Guard",
 		ModuleCommand=function(self) self:stoptweening():queuecommand("Beat") end,
 		BeatCommand=function(self)
-			if picker.pending ~= nil then
+			if TopScreenName() ~= owner then
+				-- Never reassert the redirect on some other screen: that would
+				-- leave it deaf to every button.  If the picker was somehow left
+				-- open, close it, which hands input back.
+				if picker.open then PickerClose() end
+				picker.pending = nil
+			elseif picker.pending ~= nil then
 				self:GetParent():playcommand("Open")
 			elseif picker.open then
 				-- Reasserted rather than set once: anything else on the screen
@@ -2297,17 +2333,24 @@ local t = {}
 -- The players cannot change mid-song, so their lines are taken once when the
 -- song starts and the file is only restamped every PUBLISH_IN_SONG_SECONDS.
 -- Each tick's disk work is then one hr.txt read per player.
-local songPlayers, songPublishedAt = nil, nil
+local songPlayers, songPublishedAt, songOwner = nil, nil, nil
 
 t.ScreenGameplay = Def.ActorFrame{
 	ModuleCommand=function(self)
 		self:stoptweening()
 		songPlayers, songPublishedAt = PlayerLines(), nil
+		songOwner = TopScreenName()
 		self:playcommand("Setup")
 		self:queuecommand("Tick")
 	end,
 
 	TickCommand=function(self)
+		-- After the song this loop would otherwise go on publishing the song's
+		-- lineup and adding heart-rate samples on the results screen and beyond.
+		if TopScreenName() ~= songOwner then
+			self:sleep(POLL_SECONDS):queuecommand("Tick")
+			return
+		end
 		local now = GetTimeSinceStart()
 		if songPublishedAt == nil or now - songPublishedAt >= PUBLISH_IN_SONG_SECONDS then
 			WritePlayers(songPlayers)
@@ -2356,15 +2399,16 @@ t.ScreenGameplay = Def.ActorFrame{
 -- Without it -- the results screens -- they are taken once when the screen opens
 -- and the file is restamped every PUBLISH_IN_SONG_SECONDS.
 local function PublishOnly(live)
-	local frozen = nil
+	local frozen, owner = nil, nil
 	return Def.ActorFrame{
 		ModuleCommand=function(self)
 			self:stoptweening()
+			owner = TopScreenName()
 			frozen = (not live) and PlayerLines() or nil
 			self:queuecommand("Tick")
 		end,
 		TickCommand=function(self)
-			WritePlayers(frozen)
+			if TopScreenName() == owner then WritePlayers(frozen) end
 			self:sleep(live and POLL_SECONDS or PUBLISH_IN_SONG_SECONDS):queuecommand("Tick")
 		end,
 	}
