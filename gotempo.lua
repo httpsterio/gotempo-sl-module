@@ -120,7 +120,10 @@ local HR_GRAPH_POINTS = 64
 local HR_GRAPH_SMOOTH = 1		-- moving-average window, in points; 1 disables
 local HR_GRAPH_PAD = 0.1		-- headroom above the peak and below the trough
 local HR_GRAPH_THICKNESS = 1.5		-- half-width of the drawn ribbon, across the line
-local HR_GRAPH_COLOR = { 1, 0.31, 0.64, 1 }	-- pink, distinct from the lifebar and the scatter dots
+-- The line's colour when a profile names none.  Looked up by hex rather than by
+-- position in HR_COLOR_CHOICES, so reordering the palette cannot change it.
+local HR_DEFAULT_COLOR = "#FF5555"	-- red
+local HR_GRAPH_COLOR = color(HR_DEFAULT_COLOR)
 
 -- The min, max and mean readings, written up the right-hand edge at the height
 -- each one sits at.  The mean is dropped when it would collide with one of the
@@ -129,12 +132,12 @@ local HR_GRAPH_COLOR = { 1, 0.31, 0.64, 1 }	-- pink, distinct from the lifebar a
 local HR_LABEL_ZOOM = 0.13
 local HR_LABEL_INSET = 1		-- from the left edge of the box
 local HR_LABEL_PAD = 2			-- around the text, inside its backing
-local HR_LABEL_COLOR = { 1, 0.31, 0.64, 1 }
+local HR_LABEL_COLOR = HR_GRAPH_COLOR
 local HR_LABEL_BG = { 0, 0, 0, 0.65 }	-- the density bars run underneath
 
 -- The mean also gets a rule across the whole box, faint enough to read as a
 -- reference rather than as another series.
-local HR_MEAN_LINE = { 1, 0.31, 0.64, 0.5 }
+local HR_MEAN_LINE = { HR_GRAPH_COLOR[1], HR_GRAPH_COLOR[2], HR_GRAPH_COLOR[3], 0.5 }
 local HR_MEAN_LINE_H = 0.7
 
 -- A gap in the readings is drawn as a gap.  Two separate things can stop them:
@@ -157,13 +160,38 @@ local HR_GRAPH_GAP = 3			-- seconds of silence that break the line
 local HR_GRAPH_TOGGLE = "MenuDown"
 
 -- What the in-game picker's appearance rows offer.  Presets rather than free
--- entry: there is no keyboard at a cabinet, and a palette is quicker than
--- stepping a hex value one digit at a time.  The first colour is the default.
+-- entry: there is no keyboard at a cabinet, and a named palette is quicker than
+-- stepping a hex value one digit at a time.  The picker shows the names; the
+-- profile stores the hex, so renaming a colour here breaks nobody's settings.
+-- A colour a joined player set by hand is added to the list for that session.
 local HR_COLOR_CHOICES = {
-	"#FF4FA3", "#F56C27", "#FFC24B", "#13BE74",
-	"#4DB8FF", "#B07CFF", "#FF5555", "#FFFFFF",
+	{ name = "red",          hex = "#FF5555" },
+	{ name = "coral",        hex = "#E5633E" },
+	{ name = "burnt orange", hex = "#F18B2F" },
+	{ name = "orange",       hex = "#F79F28" },
+	{ name = "amber",        hex = "#FDB320" },
+	{ name = "yellow",       hex = "#FFE94D" },
+	{ name = "lime",         hex = "#B6F24A" },
+	{ name = "green",        hex = "#59D376" },
+	{ name = "jade",         hex = "#1ED397" },
+	{ name = "turquoise",    hex = "#1FC9D4" },
+	{ name = "sky",          hex = "#4DB8FF" },
+	{ name = "azure",        hex = "#2E6BFF" },
+	{ name = "blue",         hex = "#1E29F9" },
+	{ name = "violet",       hex = "#4F0EB8" },
+	{ name = "lilac",        hex = "#D08CFF" },
+	{ name = "orchid",       hex = "#FF7AD9" },
+	{ name = "pink",         hex = "#FF4FA3" },
+	{ name = "light",        hex = "#F3F3F3" },
 }
-local HR_THICKNESS_CHOICES = { 0.6, 0.8, 1.0, 1.2, 1.4, 1.7, 2.0, 2.5 }
+
+-- Thickness in tenths, 0.1 to 4.0.  Finer than a tenth is not worth offering:
+-- the line is three units wide per 1.0, so neighbouring tenths already differ by
+-- about a third of a pixel at 1080p.  A hand-written 1.25 is rounded, not kept.
+local HR_THICKNESS_MIN = 0.1
+local HR_THICKNESS_MAX = 4
+local HR_THICKNESS_CHOICES = {}
+for i = 1, 40 do HR_THICKNESS_CHOICES[i] = i / 10 end
 
 -- A heart in the corner of every other screen, so the wait for a strap to
 -- connect is visible somewhere other than the tray.  Lit and beating when that
@@ -222,10 +250,10 @@ local PROFILE_KEY = "Device"
 -- above when missing, empty or malformed:
 --
 --	Color=#FF4FA3		the line, its labels and the mean rule
---	Thickness=1.4		multiplies HR_GRAPH_THICKNESS, at every slope
+--	Thickness=1.4		multiplies HR_GRAPH_THICKNESS, at every slope; rounded
+--				to a tenth and held within 0.1 to 4.0
 local PROFILE_KEY_COLOR = "Color"
 local PROFILE_KEY_THICKNESS = "Thickness"
-local HR_THICKNESS_MAX = 4		-- a typo should not fill the box
 
 -- Paint the panel background a bright colour and keep it visible even with no
 -- reading, so you can see exactly what space it occupies while positioning it.
@@ -491,11 +519,17 @@ local function ParseColor(text)
 end
 
 
--- A profile's line thickness, as a multiplier. Zero or negative would erase the
--- line, which the toggle already does better.
+-- A profile's line thickness, as a multiplier, rounded to a tenth and held within
+-- range.  Zero or negative is rejected rather than clamped up: that reads as a
+-- typo, not as a request for the thinnest line, and erasing the line is what the
+-- toggle is for.  Nothing is written back; the file keeps what the player wrote
+-- until they change it in the picker.
 local function ParseThickness(text)
 	local n = tonumber(text)
-	if n == nil or n <= 0 or n > HR_THICKNESS_MAX then return nil end
+	if n == nil or n <= 0 then return nil end
+	n = math.floor(n * 10 + 0.5) / 10
+	if n < HR_THICKNESS_MIN then n = HR_THICKNESS_MIN end
+	if n > HR_THICKNESS_MAX then n = HR_THICKNESS_MAX end
 	return n
 end
 
@@ -510,7 +544,9 @@ end
 -- opens -- so nothing here is hot enough to be worth a cache that can go stale.
 -- ProfileDevice is the one that runs every second, and it is separate.
 local function ProfileStyle(pn)
-	local style = { color = HR_GRAPH_COLOR, thickness = HR_GRAPH_THICKNESS }
+	-- scale is the rounded multiplier itself, kept so the picker can find its
+	-- tenth without dividing a float back out of thickness.
+	local style = { color = HR_GRAPH_COLOR, thickness = HR_GRAPH_THICKNESS, scale = 1 }
 	if PROFILEMAN == nil or IniFile == nil then return style end
 
 	local dir = PROFILEMAN:GetProfileDir(PROFILE_SLOTS[pn])
@@ -524,7 +560,7 @@ local function ProfileStyle(pn)
 		local hex = NormalizeHex(section[PROFILE_KEY_COLOR])
 		if hex ~= nil then style.color, style.colorHex = color(hex), hex end
 		local scale = ParseThickness(section[PROFILE_KEY_THICKNESS])
-		if scale ~= nil then style.thickness = HR_GRAPH_THICKNESS * scale end
+		if scale ~= nil then style.thickness, style.scale = HR_GRAPH_THICKNESS * scale, scale end
 	end
 	return style
 end
@@ -647,13 +683,26 @@ local function PickerRows(devices, owners, mine)
 end
 
 
--- Commits one side's choices to that player's own profile.  Everything outside
--- this module's section is left alone, and a nil device removes the key rather
--- than writing an empty one.
+local function SameMAC(a, b)
+	return (a or ""):upper() == (b or ""):upper()
+end
+
+
+-- Commits one side's choices to that player's own profile, writing only what the
+-- player actually changed.
 --
--- st carries indices into the choice tables rather than values, because that is
--- what the adjuster rows step through.
+-- It used to write all three keys every time.  The picker maps a profile's colour
+-- and thickness onto its lists when it opens, so a player with a hand-set value
+-- who opened the menu only to change strap had that value replaced by whatever
+-- the list fell back to.  Now an untouched setting is not written at all, and
+-- neither is anything else outside this module's section.  A nil device removes
+-- the key rather than writing an empty one.  With nothing changed the file is not
+-- rewritten.
 local function WriteProfileSettings(pn, st)
+	local deviceChanged = not SameMAC(st.device, st.originalDevice)
+	local touched = st.touched or {}
+	if not (deviceChanged or touched.color or touched.thickness) then return true end
+
 	if PROFILEMAN == nil or IniFile == nil then return false end
 	local dir = PROFILEMAN:GetProfileDir(PROFILE_SLOTS[pn])
 	if dir == nil or #dir == 0 then return false end
@@ -663,9 +712,9 @@ local function WriteProfileSettings(pn, st)
 	local section = contents[PROFILE_SECTION] or {}
 	contents[PROFILE_SECTION] = section
 
-	section[PROFILE_KEY] = st.device
-	section[PROFILE_KEY_COLOR] = HR_COLOR_CHOICES[st.color]
-	section[PROFILE_KEY_THICKNESS] = HR_THICKNESS_CHOICES[st.thickness]
+	if deviceChanged then section[PROFILE_KEY] = st.device end
+	if touched.color then section[PROFILE_KEY_COLOR] = st.colorHex end
+	if touched.thickness then section[PROFILE_KEY_THICKNESS] = HR_THICKNESS_CHOICES[st.thickness] end
 
 	IniFile.WriteFile(path, contents)
 	return true
@@ -1347,11 +1396,56 @@ local picker = { open = false }
 local side = {}
 
 
-local function ChoiceIndex(list, value, fallback)
-	for i, v in ipairs(list) do
-		if tostring(v):upper() == tostring(value):upper() then return i end
+-- Where a hex sits in a colour list, or nil.  Case-insensitive, since profiles are
+-- written by hand as well as by this module.
+local function ColorIndex(list, hex)
+	if hex == nil then return nil end
+	for i, entry in ipairs(list) do
+		if entry.hex:upper() == hex:upper() then return i end
 	end
-	return fallback
+	return nil
+end
+
+
+-- The colours on offer this session: the palette, then any colour a joined
+-- player set by hand, so it is still there to step back to after cycling away.
+-- Built fresh every time the menu opens, from the profiles as they are then, so a
+-- custom colour nobody saves again is simply absent next time.  customs is in
+-- side order; the first side holding a colour names it, a colour two sides share
+-- appears once, and one that matches a preset is that preset.
+local function ColorPool(customs)
+	local pool = {}
+	for _, entry in ipairs(HR_COLOR_CHOICES) do
+		pool[#pool+1] = { name = entry.name, hex = entry.hex }
+	end
+	for _, c in ipairs(customs) do
+		if ColorIndex(pool, c.hex) == nil then
+			pool[#pool+1] = { name = c.label, hex = c.hex, custom = true }
+		end
+	end
+	return pool
+end
+
+
+-- Gives every side with a profile its starting colour, and the session its pool.
+-- Shared rather than per side: P1's custom colour is offered to P2 as well, and
+-- both panels step through the same list in the same order.
+local function AssignColors(sides)
+	local customs = {}
+	for pn = 1, 2 do
+		local st = sides[pn]
+		if st ~= nil and st.profile and st.colorHex ~= nil then
+			customs[#customs+1] = { hex = st.colorHex, label = "P" .. pn .. " custom" }
+		end
+	end
+
+	picker.colors = ColorPool(customs)
+	for _, st in pairs(sides) do
+		if st.profile then
+			st.color = ColorIndex(picker.colors, st.colorHex)
+				or ColorIndex(picker.colors, HR_DEFAULT_COLOR)
+		end
+	end
 end
 
 
@@ -1455,10 +1549,10 @@ local function PickerOpen()
 			if st.profile then
 				local style = ProfileStyle(pn)
 				st.device = ProfileDevice(pn)
-				st.color = ChoiceIndex(HR_COLOR_CHOICES, style.colorHex or HR_COLOR_CHOICES[1], 1)
-				st.thickness = ChoiceIndex(HR_THICKNESS_CHOICES,
-					style.thickness / HR_GRAPH_THICKNESS, ChoiceIndex(HR_THICKNESS_CHOICES, 1.0, 3))
-				ShowNav(st)
+				st.originalDevice = st.device
+				st.colorHex = style.colorHex
+				st.thickness = math.floor(style.scale * 10 + 0.5)
+				st.touched = {}
 				any = true
 			else
 				FinishSide(st, "noprofile")
@@ -1467,6 +1561,13 @@ local function PickerOpen()
 		end
 	end
 	if not any then return end
+
+	-- Colours need every side read first, since one side's custom colour is
+	-- offered to the other.
+	AssignColors(side)
+	for _, st in pairs(side) do
+		if st.profile then ShowNav(st) end
+	end
 
 	picker.open = true
 	picker.devices, picker.owners, picker.scanning, picker.waitUntil = nil, nil, false, nil
@@ -1489,14 +1590,19 @@ end
 
 -- ── input ───────────────────────────────────────────────────────────────────
 
+-- Steps a setting and records that the player touched it, which is what makes
+-- Save write it.  Both lists wrap, so overshooting either end is one press back.
 local function Adjust(st, row, delta)
 	if row.adjust == "color" then
-		st.color = ((st.color - 1 + delta) % #HR_COLOR_CHOICES) + 1
+		st.color = ((st.color - 1 + delta) % #picker.colors) + 1
+		st.colorHex = picker.colors[st.color].hex
 	elseif row.adjust == "thickness" then
 		st.thickness = ((st.thickness - 1 + delta) % #HR_THICKNESS_CHOICES) + 1
 	else
 		return
 	end
+	st.touched = st.touched or {}
+	st.touched[row.adjust] = true
 	st.dirty = true
 	ShowNav(st)	-- the exit row is named after this flag
 end
@@ -1542,7 +1648,13 @@ end
 
 local function PickerInput(event)
 	if not picker.open then return false end
-	if event == nil or event.type ~= "InputEventType_FirstPress" then return true end
+	if event == nil then return true end
+
+	-- Left and right repeat while held: thickness has forty steps, and one press
+	-- per step is a lot of tapping.  Everything else acts once per press.
+	local held = event.type == "InputEventType_Repeat"
+		and (event.GameButton == "MenuLeft" or event.GameButton == "MenuRight")
+	if event.type ~= "InputEventType_FirstPress" and not held then return true end
 
 	local pn = EventSide(event)
 	local st = pn and side[pn]
@@ -1698,7 +1810,7 @@ end
 
 -- The value shown on an adjuster row.
 local function RowValue(st, row)
-	if row.adjust == "color" then return HR_COLOR_CHOICES[st.color] end
+	if row.adjust == "color" then return picker.colors[st.color].name end
 	if row.adjust == "thickness" then return string.format("%.1f", HR_THICKNESS_CHOICES[st.thickness]) end
 	return nil
 end
@@ -1769,6 +1881,12 @@ local function PickerPanelRow(pn, index)
 				if value == nil then return end
 				self:settext("‹ " .. value .. " ›")
 				self:diffuse(p.at == p.st.cursor and PICKER_SEL or Ink(p.st, "dim"))
+				-- Names vary in width, so the swatch follows the text rather than
+				-- sitting at a fixed x that a long name would run into.
+				local swatch = self:GetParent():GetChild("Swatch")
+				if swatch ~= nil then
+					swatch:x(PANEL_W/2 - 16 - self:GetZoomedWidth() - 12)
+				end
 			end,
 		},
 		Def.Quad{
@@ -1777,7 +1895,7 @@ local function PickerPanelRow(pn, index)
 			FillCommand=function(self, p)
 				self:visible(p.row.adjust == "color")
 				if p.row.adjust == "color" then
-					self:diffuse(color(HR_COLOR_CHOICES[p.st.color]))
+					self:diffuse(color(picker.colors[p.st.color].hex))
 				end
 			end,
 		},

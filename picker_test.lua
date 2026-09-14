@@ -8,12 +8,20 @@ PROFILE_INI, PROFILE_SECTION, PROFILE_KEY = "gotempo.ini", "gotempo", "Device"
 PROFILE_KEY_COLOR, PROFILE_KEY_THICKNESS = "Color", "Thickness"
 PROFILE_SLOTS = { "ProfileSlot_Player1", "ProfileSlot_Player2" }
 SIDES = { "PlayerNumber_P1", "PlayerNumber_P2" }
-HR_THICKNESS_MAX = 4
+HR_THICKNESS_MIN, HR_THICKNESS_MAX = 0.1, 4
 HR_GRAPH_THICKNESS = 1.5
-HR_GRAPH_COLOR = { 1, 0.31, 0.64, 1 }
-HR_COLOR_CHOICES = { "#FF4FA3", "#F56C27", "#FFC24B", "#13BE74",
-                     "#4DB8FF", "#B07CFF", "#FF5555", "#FFFFFF" }
-HR_THICKNESS_CHOICES = { 0.6, 0.8, 1.0, 1.2, 1.4, 1.7, 2.0, 2.5 }
+HR_DEFAULT_COLOR = "#FF5555"
+HR_GRAPH_COLOR = { hex = HR_DEFAULT_COLOR }
+-- Deliberately not the shipping order, and red deliberately not first: the
+-- default must be found by hex, never by position.
+HR_COLOR_CHOICES = {
+	{ name = "pink",  hex = "#FF4FA3" },
+	{ name = "coral", hex = "#E5633E" },
+	{ name = "red",   hex = "#FF5555" },
+	{ name = "light", hex = "#F3F3F3" },
+}
+HR_THICKNESS_CHOICES = {}
+for i = 1, 40 do HR_THICKNESS_CHOICES[i] = i / 10 end
 
 function todayStamp() return today end
 function secondsOfDay() return nowSecs end
@@ -131,7 +139,8 @@ group("what a side offers")
 
 local function newSide(pn, device)
 	return { pn = pn, profile = true, cursor = 1, first = 1, dirty = false,
-	         device = device, color = 1, thickness = 3 }
+	         device = device, originalDevice = device, touched = {},
+	         color = 1, colorHex = nil, thickness = 10 }
 end
 
 local st = newSide(1, "24:AC:AC:18:41:CC")
@@ -174,22 +183,72 @@ group("Save commits, and only then")
 
 written = {}
 profiles = {}
-written["/p1/gotempo.ini"] = { gotempo = { Device = "OLD", Other = "keep me" } }
-st = newSide(1, "11:22:33:44:55:66")
-st.color, st.thickness = 2, 5
+picker.colors = HR_COLOR_CHOICES
+
+-- The bug this replaced: a player with hand-set values opens the menu only to
+-- change strap, saves, and loses both.
+written["/p1/gotempo.ini"] = { gotempo = {
+	Device = "OLD", Color = "#123456", Thickness = 1.25, Other = "keep me" } }
+st = newSide(1, "OLD")
+st.device = "11:22:33:44:55:66"
 SaveSide(st)
 local ini = written["/p1/gotempo.ini"].gotempo
 check(ini.Device == "11:22:33:44:55:66", "the chosen strap is written")
-check(ini.Color == "#F56C27", "the chosen colour is written")
-check(ini.Thickness == 1.4, "the chosen thickness is written")
+check(ini.Color == "#123456", "an untouched hand-set colour survives Save")
+check(ini.Thickness == 1.25, "an untouched hand-set thickness survives Save")
 check(ini.Other == "keep me", "keys this module does not own survive")
 check(st.finished == "saved", "the side is finished")
 check(st.dirty == false, "and no longer unsaved")
 
-written = {}
-st = newSide(2, nil)
+-- Touched settings are written.
+written["/p1/gotempo.ini"] = { gotempo = { Color = "#123456", Thickness = 1.25 } }
+st = newSide(1, nil)
+ShowNav(st)
+local colourRow, thickRow
+for i, row in ipairs(st.rows) do
+	if row.adjust == "color" then colourRow = i end
+	if row.adjust == "thickness" then thickRow = i end
+end
+st.color = 1
+Adjust(st, st.rows[colourRow], 1)
+Adjust(st, st.rows[thickRow], 5)
 SaveSide(st)
-check(written["/p2/gotempo.ini"].gotempo.Device == nil, "saving no strap removes the key")
+ini = written["/p1/gotempo.ini"].gotempo
+check(ini.Color == "#E5633E", "a touched colour is written as hex")
+check(math.abs(ini.Thickness - 1.5) < 1e-9, "a touched thickness is written")
+check(ini.Device == nil, "an unchanged device is not written")
+
+-- The file gained a strap after the menu opened (edited by hand, or by the other
+-- side's save). A player who only touched their colour must not wipe it.
+written["/p1/gotempo.ini"] = { gotempo = { Device = "24:AC:AC:18:41:CC" } }
+st = newSide(1, nil)
+ShowNav(st)
+st.color = 1
+Adjust(st, st.rows[colourRow], 1)
+SaveSide(st)
+check(written["/p1/gotempo.ini"].gotempo.Device == "24:AC:AC:18:41:CC",
+	"a device the player did not change is left as the file has it")
+
+-- Nothing changed, nothing rewritten.
+written = {}
+st = newSide(2, "24:AC:AC:18:41:CC")
+SaveSide(st)
+check(written["/p2/gotempo.ini"] == nil, "saving with no changes leaves the file alone")
+
+-- Remove, then save.
+written["/p2/gotempo.ini"] = { gotempo = { Device = "24:AC:AC:18:41:CC", Color = "#FF4FA3" } }
+st = newSide(2, "24:AC:AC:18:41:CC")
+st.device = nil
+SaveSide(st)
+check(written["/p2/gotempo.ini"].gotempo.Device == nil, "removing a strap removes the key")
+check(written["/p2/gotempo.ini"].gotempo.Color == "#FF4FA3", "and leaves the colour alone")
+
+-- Picking the strap you already had is not a change.
+written = {}
+st = newSide(1, "24:AC:AC:18:41:CC")
+st.device = "24:ac:ac:18:41:cc"
+SaveSide(st)
+check(written["/p1/gotempo.ini"] == nil, "re-picking the same strap in other case is not a change")
 
 -- ── closing ─────────────────────────────────────────────────────────────────
 group("the menu closes only when everyone is done")
@@ -223,8 +282,70 @@ group("colour and thickness")
 
 check(ParseThickness(1.4) == 1.4, "a numeric Thickness from IniFile parses")
 check(ParseThickness("1.4") == 1.4, "a string Thickness parses")
+check(ParseThickness(1.25) == 1.3, "a finer value rounds to a tenth")
+check(ParseThickness(0.04) == 0.1, "a tiny positive value clamps up to 0.1")
+check(ParseThickness(9) == 4, "a runaway value clamps down to 4")
 check(ParseThickness(0) == nil and ParseThickness(-1) == nil, "non-positive is rejected")
-check(ParseThickness(500) == nil, "a runaway value is rejected")
+check(ParseThickness("abc") == nil, "a non-number is rejected")
+
+group("the colour list")
+
+local function sidesWith(hex1, hex2)
+	local a, b = newSide(1, nil), newSide(2, nil)
+	a.colorHex, b.colorHex = hex1, hex2
+	return { [1] = a, [2] = b }
+end
+
+local sides = sidesWith(nil, nil)
+AssignColors(sides)
+check(#picker.colors == #HR_COLOR_CHOICES, "no customs, just the palette")
+check(picker.colors[sides[1].color].hex == HR_DEFAULT_COLOR,
+	"no colour set starts on the default, found by hex not position")
+
+sides = sidesWith("#123456", nil)
+AssignColors(sides)
+local last = picker.colors[#picker.colors]
+check(last.hex == "#123456" and last.name == "P1 custom", "a hand-set colour joins the list as P1 custom")
+check(picker.colors[sides[1].color].hex == "#123456", "P1 starts on their own custom colour")
+check(ColorIndex(picker.colors, "#123456") ~= nil, "and P2 can step to it too")
+
+sides = sidesWith("#123456", "#123456")
+AssignColors(sides)
+check(#picker.colors == #HR_COLOR_CHOICES + 1, "a colour both sides share appears once")
+check(picker.colors[#picker.colors].name == "P1 custom", "named after the first side")
+
+sides = sidesWith(nil, "#abcdef")
+AssignColors(sides)
+check(picker.colors[#picker.colors].name == "P2 custom", "a P2-only custom is named for P2")
+
+sides = sidesWith("#ff4fa3", nil)
+AssignColors(sides)
+check(#picker.colors == #HR_COLOR_CHOICES, "a custom matching a preset adds nothing")
+check(picker.colors[sides[1].color].name == "pink", "and shows the preset's name")
+
+-- Stepping away from a custom colour must not remove it for the session.
+sides = sidesWith("#123456", nil)
+AssignColors(sides)
+st = sides[1]
+ShowNav(st)
+for i, row in ipairs(st.rows) do if row.adjust == "color" then colourRow = i end end
+Adjust(st, st.rows[colourRow], 1)
+check(ColorIndex(picker.colors, "#123456") ~= nil, "stepping away keeps the custom colour on offer")
+
+group("wrapping")
+
+st.color = #picker.colors
+Adjust(st, st.rows[colourRow], 1)
+check(st.color == 1, "colour wraps from last to first")
+Adjust(st, st.rows[colourRow], -1)
+check(st.color == #picker.colors, "and back from first to last")
+
+for i, row in ipairs(st.rows) do if row.adjust == "thickness" then thickRow = i end end
+st.thickness = 40
+Adjust(st, st.rows[thickRow], 1)
+check(HR_THICKNESS_CHOICES[st.thickness] == 0.1, "thickness wraps from 4.0 to 0.1")
+Adjust(st, st.rows[thickRow], -1)
+check(HR_THICKNESS_CHOICES[st.thickness] == 4, "and back from 0.1 to 4.0")
 check(NormalizeHex("F56C27") == "#F56C27", "a bare hex gains its hash")
 check(NormalizeHex("#FFF") == nil and NormalizeHex("pink") == nil, "junk is rejected")
 
@@ -232,6 +353,7 @@ profiles = { { dir = "/p1/", name = "x", ini = { gotempo = { Thickness = 1.4, Co
 PROFILEMAN.GetProfileDir = function(_, _) return "/p1/" end
 local style = ProfileStyle(1)
 check(style.thickness == 1.5 * 1.4, "Thickness multiplies the configured width")
+check(style.scale == 1.4, "the rounded multiplier is kept for the picker")
 check(style.colorHex == "#F56C27", "the hex is kept so the picker can show the preset")
 
 -- Read fresh every call. It used to be cached against the profile directory,

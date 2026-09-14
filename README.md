@@ -101,16 +101,18 @@ own panel, driven by their own controller, showing their current strap and its l
 │    72 bpm                    │  │                              │
 │  ──────────────────────────  │  │  ──────────────────────────  │
 │  › Change strap              │  │  › Choose a strap            │
-│    Remove strap              │  │    Line colour    ‹ FF4FA3 › │
-│    Line colour    ‹ F56C27 › │  │    Line thickness ‹ 1.0 ›    │
+│    Remove strap              │  │    Line colour  ■ ‹ red ›    │
+│    Line colour ■ ‹ coral ›   │  │    Line thickness ‹ 1.0 ›    │
 │    Line thickness ‹ 1.4 ›    │  │    Save and exit             │
 │    Save and exit             │  │    Back without saving       │
 │    Exit                      │  │                              │
 └──────────────────────────────┘  └──────────────────────────────┘
 ```
 
-Up and down move, left and right change a value, **Start** selects. Nothing is written until
-**Save and exit**, so a pick can be undone by leaving. **Back** steps out of the strap list,
+Up and down move, left and right change a value (hold to keep stepping; both lists wrap),
+**Start** selects. Nothing is written until **Save and exit**, and then only the settings you
+actually changed, so a pick can be undone by leaving and a colour or thickness you set by hand
+survives a visit to change strap. **Back** steps out of the strap list,
 and at the top level it parks the cursor on Save rather than acting, so the reflex press
 lands on the safe outcome.
 
@@ -127,14 +129,22 @@ readable in a room with several cabinets. Those are still pickable: two players 
 strap is allowed, and gotempo connects it once and feeds both sides.
 
 `Color` and `Thickness` are optional and affect only that player's evaluation graph: the line, its
-labels and the mean rule. `Color` is hex, with or without the `#`, six digits or eight for an
-alpha. `Thickness` multiplies the configured width, capped at 4, and holds at every slope rather
-than only on the flat. Anything missing, empty or malformed falls back to the values in
-`gotempo.lua`, so a typo costs you the setting and not the graph.
+labels and the mean rule. Without them the line is red.
+
+`Color` is hex, with or without the `#`, six digits or eight for an alpha. The menu offers a named
+palette, and a colour set by hand that isn't in it is added to the list as **P1 custom** or
+**P2 custom** while that player is joined — offered to the other player too, and gone from the
+list once nobody has it saved.
+
+`Thickness` multiplies the configured width and holds at every slope rather than only on the
+flat. It runs from 0.1 to 4.0 in tenths: a finer value such as `1.25` is drawn as `1.3`, and
+values outside the range are pulled back into it. The file keeps what you wrote until you change
+thickness in the menu. Zero, negative or non-numeric values fall back to the default, so a typo
+costs you the setting and not the graph.
 
 ## Evaluation graph
 
-After a song, your heart rate is drawn as a pink line over the density graph, sharing its time
+After a song, your heart rate is drawn as a line over the density graph, sharing its time
 axis so a peak sits above the part of the chart that caused it. Two players each get their own.
 
 Press **MenuDown** at the evaluation screen to fold the line away and again to bring it back, per
@@ -214,22 +224,23 @@ position and the heart grows away from them. Enlarging the heart therefore needs
 | `HR_GRAPH_PAD` | `0.1` | Headroom above and below the range, as a fraction of it |
 | `HR_GRAPH_GAP` | `3` | Seconds of silence that break the line rather than bridging it |
 | `HR_GRAPH_THICKNESS` | `1.5` | Half-width of the line, measured across it. A profile's `Thickness` multiplies this |
-| `HR_GRAPH_COLOR` | pink | Overridden per player by `Color` |
+| `HR_DEFAULT_COLOR` | `"#FF5555"` | The line's colour with no `Color` set. Looked up by hex, so reordering the palette cannot change it |
+| `HR_GRAPH_COLOR` | red | Built from `HR_DEFAULT_COLOR`; overridden per player by `Color` |
 | `HR_GRAPH_TOGGLE` | `"MenuDown"` | Folds the line away at the evaluation screen |
 | `HR_STALE_POLLS` | `3` | Repeated timestamps before the graph stops collecting |
 | `HR_LABEL_ZOOM` | `0.13` | Min/mean/max label size |
 | `HR_LABEL_INSET` | `1` | Labels in from the box's left edge |
 | `HR_LABEL_PAD` | `2` | Inset around the label text, inside its backing |
-| `HR_LABEL_COLOR` | pink | Overridden per player by `Color` |
+| `HR_LABEL_COLOR` | red | Same as the line; overridden per player by `Color` |
 | `HR_LABEL_BG` | black, 0.65 | Backing, since the density bars run underneath |
-| `HR_MEAN_LINE` | pink, half alpha | Rule across the box at the mean |
+| `HR_MEAN_LINE` | red, half alpha | Rule across the box at the mean, in the line's colour |
 | `HR_MEAN_LINE_H` | `0.7` | Its thickness |
 | `EVAL_PANE_W` / `EVAL_PANE_GAP` | `300` / `10` | Simply Love's pane geometry, recomputed here because a module cannot reach into the screen |
 | `EVAL_GRAPH_Y` | `124` | Graph box, below screen centre |
 | `EVAL_ONE_PLAYER_NUDGE` | `0.2541` | One player: the density graph's offset within its pane |
-| `HR_COLOR_CHOICES` | 8 presets | What the picker's **Line colour** row steps through |
-| `HR_THICKNESS_CHOICES` | `0.6` … `2.5` | What **Line thickness** steps through |
-| `HR_THICKNESS_MAX` | `4` | Ceiling on a hand-written `Thickness` |
+| `HR_COLOR_CHOICES` | 18 named colours | What the picker's **Line colour** row steps through; names shown, hex stored |
+| `HR_THICKNESS_CHOICES` | `0.1` … `4.0` | What **Line thickness** steps through, in tenths |
+| `HR_THICKNESS_MIN` / `HR_THICKNESS_MAX` | `0.1` / `4` | Range a `Thickness` is rounded and clamped into |
 | `STATUS_HEART` | `true` | Heart in the song wheel's header, one per side |
 | `STATUS_HEART_SIZE` | `14` | |
 | `STATUS_HEART_X` | `130` | Either side of screen centre, flanking the header's clock |

@@ -19,8 +19,9 @@ def grab(name):
 
 names = ["ReadDevices", "StrapOwners", "PickerRows", "SideRows", "ShowNav",
          "FinishSide", "SaveSide", "Confirm", "Move", "PickerAllDone",
-         "WriteProfileSettings", "NormalizeHex", "ParseColor", "ParseThickness",
-         "ProfileStyle"]
+         "SameMAC", "WriteProfileSettings", "NormalizeHex", "ParseColor",
+         "ParseThickness", "ProfileStyle", "ColorIndex", "ColorPool",
+         "AssignColors", "Adjust"]
 out = ["-- generated: real function bodies lifted from gotempo.lua"]
 for n in names:
     out.append(grab(n).replace("local function ", "function ", 1))
