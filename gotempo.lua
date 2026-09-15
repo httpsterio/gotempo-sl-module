@@ -727,7 +727,10 @@ local function ReadDevices(since)
 end
 
 
--- Every local profile that names a strap, as MAC -> { display names }.
+-- Every local profile that names a strap, as MAC -> { labels }.  A label is the
+-- profile's display name, with the side added when that profile is joined right
+-- now: profile names are free text, and one called "P2" sitting on the P1 side
+-- was read as the P2 side's strap.
 --
 -- This is what makes the list usable where it matters.  A venue with three cabs
 -- in one room has six people playing and more standing about, so a scan can turn
@@ -739,6 +742,12 @@ end
 local function StrapOwners()
 	local owners = {}
 	if PROFILEMAN == nil or IniFile == nil then return owners end
+
+	local joined = {}
+	for pn = 1, 2 do
+		local dir = GAMESTATE:IsSideJoined(SIDES[pn]) and PROFILEMAN:GetProfileDir(PROFILE_SLOTS[pn])
+		if dir and #dir > 0 then joined[dir] = pn end
+	end
 
 	for i = 1, PROFILEMAN:GetNumLocalProfiles() do
 		-- Both index calls are 0-based.
@@ -752,8 +761,10 @@ local function StrapOwners()
 			local mac = section and section[PROFILE_KEY]
 			if type(mac) == "string" and #mac > 0 then
 				local key = mac:upper()
+				local label = profile:GetDisplayName()
+				if joined[dir] then label = label .. " (P" .. joined[dir] .. ")" end
 				owners[key] = owners[key] or {}
-				table.insert(owners[key], profile:GetDisplayName())
+				table.insert(owners[key], label)
 			end
 		end
 	end
@@ -762,9 +773,10 @@ end
 
 
 -- The list as one side sees it: the strap that side already holds, then ones
--- nobody claims, then a divider and the rest.  Position alone answers "which of
--- these is free", so nothing has to be read to find one.  Claimed straps stay
--- listed and stay pickable, because sharing a strap is a legitimate thing to do.
+-- nobody claims, then the rest with their owners beside them.  Position alone
+-- answers "which of these is free", so nothing has to be read to find one.
+-- Claimed straps stay listed and stay pickable, because sharing a strap is a
+-- legitimate thing to do.
 --
 -- mine is that side's own strap, and it is first rather than filed under "in use
 -- by others", which is what it would otherwise be: the profile claiming it is
@@ -789,10 +801,7 @@ local function PickerRows(devices, owners, mine)
 
 	local rows = own
 	for _, row in ipairs(free) do rows[#rows+1] = row end
-	if #used > 0 then
-		if #rows > 0 then rows[#rows+1] = { divider = true } end
-		for _, row in ipairs(used) do rows[#rows+1] = row end
-	end
+	for _, row in ipairs(used) do rows[#rows+1] = row end
 	return rows
 end
 
@@ -1466,9 +1475,11 @@ end
 -- leaving, and so browsing the list does not make gotempo connect and reconnect
 -- behind the menu.
 
-local PANEL_W = 400
-local PANEL_GAP = 22
-local PANEL_H = 392
+-- Out to the screen's side edges and from the header bar down to the footer bar,
+-- so nothing of the screen underneath shows around them half covered.
+local PANEL_GAP = 18
+local PANEL_W = (_screen.w - PANEL_GAP) / 2
+local PANEL_H = 416
 
 -- Every colour here is opaque, and the dim variants are mixed against the panel
 -- background by hand rather than left to alpha.  Translucent text is harder to
@@ -1504,16 +1515,16 @@ local PICKER_GUARD = 0.1		-- how often the input redirect is reasserted
 
 -- Panel-local layout, written out rather than derived: deriving it put one row
 -- on top of another the moment a line was added between them.
-local P_HEADER_Y = -178
-local P_STATUS_Y = -146
-local P_STATUS_SUB_Y = -126
-local P_RULE_TOP_Y = -108
--- List rows are taller, so they start lower: sharing one origin put the first
--- one's top edge exactly on the rule above it.
-local NAV_ROWS_Y = -86
-local LIST_ROWS_Y = -76
-local P_RULE_BOT_Y = 152
-local P_FOOTER_Y = 172
+local P_HEADER_Y = -190
+local P_STATUS_Y = -158
+local P_STATUS_SUB_Y = -138
+local P_RULE_TOP_Y = -120
+-- Nav rows are placed by centre, list rows by top edge: list rows come in two
+-- heights, and placing them by centre put the first one's edge on the rule.
+local NAV_ROWS_Y = -98
+local LIST_ROWS_TOP = -110
+local P_RULE_BOT_Y = 164
+local P_FOOTER_Y = 184
 local P_GUTTER = 18			-- fixed, so the marker never shifts the text
 
 -- The cursor, the adjuster arrows and the status mark are drawn larger than the
@@ -1532,21 +1543,31 @@ local P_GUTTER = 18			-- fixed, so the marker never shifts the text
 -- module at all.
 local PICKER_SIZES = {
 	-- Measured off a screenshot: at zoom 1 the arrow glyphs' ink sits about a
-	-- unit below their box centre, and the bullet's about 1.2 units above it.
-	-- These nudges put the ink level with the row text at the zooms given.
+	-- unit below their box centre.  Capitals and digits sit centred on the
+	-- actor's y at every zoom used here, so the drawn status marks need no nudge.
 	markerZoom = 1.4, markerY = -0.5,
 	arrowZoom = 1.4,  arrowY = -0.4,
-	markZoom = 1.2,   markY = 1.6,
 	swatchW = 24,     swatchH = 12,	-- 2:1
 	arrowGap = 6,
+	-- A strap row's two lines, about the row's centre.  The pair is off centre
+	-- by the difference in their sizes, so the block as a whole is centred.
+	nameY = -6,       subY = 7,
+	ownerGap = 4,
+	-- Scan again and Back in the list.  A strap row's height less its second
+	-- line, so the space between any two rows' text is the same.
+	actionRowH = 24,
+	-- The status marks, drawn with quads: Miso has no check or cross glyph that
+	-- sits level with the text.  Sizes are the ink box, in units.
+	checkW = 11,      crossW = 9,
+	markStroke = 2,   markGap = 8,
 }
 PICKER_SIZES.swatchX = PANEL_W/2 - 16 - PICKER_SIZES.swatchW/2
 PICKER_SIZES.arrowRight = PANEL_W/2 - 16 - PICKER_SIZES.swatchW - 10
 
 local NAV_ROW_H = 30
 local NAV_VISIBLE = 8
-local LIST_ROW_H = 44
-local LIST_VISIBLE = 5
+local LIST_ROW_H = 36
+local LIST_VISIBLE = 7
 
 
 
@@ -1637,9 +1658,6 @@ local function ShowList(st)
 	st.rows = PickerRows(picker.devices or {}, picker.owners or {}, st.device)
 	st.rows[#st.rows+1] = { action = "rescan", name = "Scan again" }
 	st.rows[#st.rows+1] = { action = "back", name = "Back" }
-	for i, row in ipairs(st.rows) do
-		if not row.divider then st.cursor = i break end
-	end
 end
 
 
@@ -1801,14 +1819,7 @@ end
 
 local function Move(st, delta)
 	if #st.rows == 0 then return end
-	local i = st.cursor
-	for _ = 1, #st.rows do
-		i = ((i - 1 + delta) % #st.rows) + 1
-		if not st.rows[i].divider then
-			st.cursor = i
-			return
-		end
-	end
+	st.cursor = ((st.cursor - 1 + delta) % #st.rows) + 1
 end
 
 
@@ -1931,13 +1942,15 @@ local function Ink(st, which)
 end
 
 
+-- The profile's name alone: the panel's half of the screen already says which
+-- side it is.
 local function PickerPanelHeader(st)
-	local name = "P" .. st.pn
+	local name = ""
 	if st.profile and PROFILEMAN ~= nil then
 		local profile = PROFILEMAN:GetProfile(SIDES[st.pn])
-		if profile ~= nil then name = name .. " · " .. profile:GetDisplayName() end
+		if profile ~= nil then name = profile:GetDisplayName() end
 	end
-	if st.dirty then name = name .. " · unsaved" end
+	if st.dirty then name = (name == "") and "(unsaved)" or (name .. " (unsaved)") end
 	return name
 end
 
@@ -1949,10 +1962,10 @@ end
 -- showing that number under a different strap's name would be a lie.
 local function PickerPanelStatus(st)
 	if not st.profile then
-		return { mark = "×", text = "No profile loaded", ink = "bad" }
+		return { mark = "cross", text = "No profile loaded", ink = "bad" }
 	end
 	if st.device == nil then
-		return { mark = "×", text = "No strap selected", ink = "bad" }
+		return { mark = "cross", text = "No strap selected", ink = "bad" }
 	end
 
 	local name = st.device
@@ -1961,13 +1974,13 @@ local function PickerPanelStatus(st)
 	end
 
 	if st.dirty then
-		return { mark = "•", text = name, ink = "text", sub = "saves on exit" }
+		return { text = name, ink = "text", sub = "saves on exit" }
 	end
 	local bpm = FreshHeartRate(st.pn)
 	if bpm ~= nil then
-		return { mark = "•", text = name, ink = "ok", sub = bpm .. " bpm" }
+		return { mark = "check", text = name, ink = "ok", sub = bpm .. " bpm" }
 	end
-	return { mark = "·", text = name, ink = "dim", sub = "connecting…" }
+	return { text = name, ink = "dim", sub = "connecting..." }
 end
 
 
@@ -1985,7 +1998,7 @@ end
 
 
 local function PickerPanelHint(st)
-	if st.mode == "scanning" then return "Scanning for straps…" end
+	if st.mode == "scanning" then return "Scanning for straps..." end
 	if st.mode == "empty" then return "No straps found.\nPut the strap on and make sure\nit is not connected elsewhere." end
 	if st.mode == "nogotempo" then return "gotempo is not running." end
 	if st.mode == "scantimeout" then return "The scan did not finish.\nTry again." end
@@ -2007,39 +2020,47 @@ local function PickerPanelRow(pn, index)
 	return Def.ActorFrame{
 		DrawCommand=function(self)
 			local st = side[pn]
-			local row = st and st.rows[(st.first or 1) + index - 1]
+			local first = st and (st.first or 1)
+			local list = st ~= nil and st.mode == "list"
+			local row = st and st.rows[first + index - 1]
+			-- There are always NAV_VISIBLE of these; the list shows fewer.
+			if list and index > LIST_VISIBLE then row = nil end
 			self:visible(row ~= nil)
 			if row == nil then return end
 
-			local list = (st.mode == "list")
-			local h = list and LIST_ROW_H or NAV_ROW_H
-			self:y((list and LIST_ROWS_Y or NAV_ROWS_Y) + (index - 1) * h)
-			self:playcommand("Fill", { st = st, row = row, at = (st.first or 1) + index - 1 })
+			local at = first + index - 1
+			local h, y = NAV_ROW_H, NAV_ROWS_Y + (index - 1) * NAV_ROW_H
+			if list then
+				-- Heights vary, so this row's top is the sum of those above it.
+				local top = LIST_ROWS_TOP
+				for i = first, at - 1 do
+					top = top + (st.rows[i].mac and LIST_ROW_H or PICKER_SIZES.actionRowH)
+				end
+				h = row.mac and LIST_ROW_H or PICKER_SIZES.actionRowH
+				y = top + h / 2
+			end
+			self:y(y)
+			self:playcommand("Fill", { st = st, row = row, at = at, h = h, two = list and row.mac ~= nil })
 		end,
 
 		Def.Quad{
 			Name="Bar",
 			InitCommand=function(self) self:zoomto(PANEL_W - 24, NAV_ROW_H - 4):diffuse(PICKER_SEL_BAR) end,
 			FillCommand=function(self, p)
-				self:visible(not p.row.divider and p.at == p.st.cursor)
-				local h = (p.st.mode == "list") and LIST_ROW_H or NAV_ROW_H
-				self:zoomto(PANEL_W - 24, h - 4)
+				self:visible(p.at == p.st.cursor)
+				self:zoomto(PANEL_W - 24, p.h - 4)
 			end,
 		},
-		Def.Quad{
-			Name="Rule",
-			InitCommand=function(self) self:zoomto(PANEL_W - 40, 1):diffuse(PICKER_RULE) end,
-			FillCommand=function(self, p) self:visible(p.row.divider == true) end,
-		},
+		-- Centred on the row, so on a strap row it points between the two lines.
 		LoadFont("Common Normal")..{
 			Name="Marker",
 			InitCommand=function(self)
 				self:halign(0):zoom(PICKER_SIZES.markerZoom):x(-PANEL_W/2 + 14):settext("›")
+				self:y(PICKER_SIZES.markerY)
 			end,
 			FillCommand=function(self, p)
-				self:visible(not p.row.divider and p.at == p.st.cursor)
+				self:visible(p.at == p.st.cursor)
 				self:diffuse(PICKER_SEL)
-				self:y(((p.st.mode == "list") and -10 or 0) + PICKER_SIZES.markerY)
 			end,
 		},
 		LoadFont("Common Normal")..{
@@ -2049,12 +2070,14 @@ local function PickerPanelRow(pn, index)
 			InitCommand=function(self)
 				self:halign(0):zoom(0.7):x(-PANEL_W/2 + 14 + P_GUTTER):maxwidth((PANEL_W - 150) / 0.7)
 			end,
+			-- The side's own strap stays green under the cursor, or moving onto
+			-- it would hide which one it is.
 			FillCommand=function(self, p)
-				self:visible(not p.row.divider)
-				if p.row.divider then return end
-				self:settext(p.row.name)
-				self:diffuse(p.at == p.st.cursor and PICKER_SEL or Ink(p.st, "text"))
-				self:y((p.st.mode == "list") and -10 or 0)
+				local ink = Ink(p.st, "text")
+				if p.row.yours then ink = Ink(p.st, "ok")
+				elseif p.at == p.st.cursor then ink = PICKER_SEL end
+				self:settext(p.row.name):diffuse(ink)
+				self:y(p.two and PICKER_SIZES.nameY or 0)
 			end,
 		},
 		-- ‹ value ›, laid out right to left from a fixed right-hand arrow, so the
@@ -2106,25 +2129,38 @@ local function PickerPanelRow(pn, index)
 				end
 			end,
 		},
+		-- A strap row's second line: the MAC, then who has it.  Two actors so
+		-- the owner can take its own colour; the owner is placed after the
+		-- MAC's measured width, so it has to come after it here.
 		LoadFont("Common Normal")..{
 			Name="Sub",
 			InitCommand=function(self)
-				self:halign(0):zoom(0.52):x(-PANEL_W/2 + 14 + P_GUTTER):y(10)
-				self:maxwidth((PANEL_W - 40) / 0.52)
+				self:halign(0):zoom(0.52):x(-PANEL_W/2 + 14 + P_GUTTER):y(PICKER_SIZES.subY)
 			end,
 			FillCommand=function(self, p)
+				self:visible(p.two)
+				if p.two then self:settext(p.row.mac):diffuse(Ink(p.st, "dim")) end
+			end,
+		},
+		LoadFont("Common Normal")..{
+			Name="Owner",
+			InitCommand=function(self) self:halign(0):zoom(0.52):y(PICKER_SIZES.subY) end,
+			FillCommand=function(self, p)
 				local row = p.row
-				local show = (p.st.mode == "list") and row.mac ~= nil
-				self:visible(show)
-				if not show then return end
-				self:diffuse(Ink(p.st, "dim"))
-				local text = row.mac
-				if row.yours then
-					text = text .. "  ·  yours"
-				elseif row.owners ~= nil then
-					text = text .. "  ·  " .. table.concat(row.owners, ", ")
+				local text = nil
+				if p.two and row.yours then
+					text = "- yours"
+					self:diffuse(Ink(p.st, "ok"))
+				elseif p.two and row.owners ~= nil then
+					text = "- " .. table.concat(row.owners, ", ")
+					self:diffuse(Ink(p.st, "text"))
 				end
-				self:settext(text)
+				self:visible(text ~= nil)
+				if text == nil then return end
+
+				local mac = self:GetParent():GetChild("Sub")
+				local x = mac:GetX() + mac:GetZoomedWidth() + PICKER_SIZES.ownerGap
+				self:x(x):maxwidth((PANEL_W / 2 - 16 - x) / 0.52):settext(text)
 			end,
 		},
 	}
@@ -2132,6 +2168,39 @@ end
 
 
 local function PickerPanel(pn)
+	-- The check and the cross beside the status line, as strokes between points in
+	-- an ink box whose left edge is x 0 and whose middle is y 0, level with the
+	-- centre of the text's capitals.
+	local function StatusMark()
+		local s = PICKER_SIZES
+		local function strokes(name, points)
+			local shape = Def.ActorFrame{ Name=name }
+			for i = 1, #points - 1, 2 do
+				local a, b = points[i], points[i + 1]
+				local dx, dy = b[1] - a[1], b[2] - a[2]
+				shape[#shape+1] = Def.Quad{
+					Name="Stroke" .. (#shape + 1),
+					InitCommand=function(self)
+						self:xy((a[1] + b[1]) / 2, (a[2] + b[2]) / 2)
+						self:zoomto(math.sqrt(dx*dx + dy*dy) + s.markStroke / 2, s.markStroke)
+						self:rotationz(math.deg(math.atan2(dy, dx)))
+					end,
+				}
+			end
+			return shape
+		end
+
+		local w, c = s.checkW, s.crossW
+		local joint = { w * 0.35, 3.5 }
+		local r = (c - s.markStroke) / 2
+		return Def.ActorFrame{
+			Name="StatusMark",
+			InitCommand=function(self) self:y(P_STATUS_Y) end,
+			strokes("check", { { 1, 0 }, joint, joint, { w - 1, -3.5 } }),
+			strokes("cross", { { c/2 - r, -r }, { c/2 + r, r }, { c/2 - r, r }, { c/2 + r, -r } }),
+		}
+	end
+
 	local af = Def.ActorFrame{
 		DrawCommand=function(self)
 			local st = side[pn]
@@ -2169,22 +2238,24 @@ local function PickerPanel(pn)
 				local ink = Ink(st, status.ink)
 				self:settext(status.text):diffuse(ink)
 
-				-- Centre mark and text as one unit, since the mark is drawn at
-				-- its own size and the text's width varies.
+				-- Centre mark and text as one unit, since the text's width varies.
+				-- Waiting states have no mark: nothing is confirmed yet.
 				local mark = self:GetParent():GetChild("StatusMark")
-				mark:settext(status.mark):diffuse(ink)
-				local gap = 8
-				local total = mark:GetZoomedWidth() + gap + self:GetZoomedWidth()
+				local w = 0
+				for _, name in ipairs({ "check", "cross" }) do
+					local shape = mark:GetChild(name)
+					shape:visible(status.mark == name)
+					shape:GetChild("Stroke1"):diffuse(ink)
+					shape:GetChild("Stroke2"):diffuse(ink)
+				end
+				if status.mark == "check" then w = PICKER_SIZES.checkW + PICKER_SIZES.markGap end
+				if status.mark == "cross" then w = PICKER_SIZES.crossW + PICKER_SIZES.markGap end
+				local total = w + self:GetZoomedWidth()
 				mark:x(-total / 2)
-				self:x(-total / 2 + mark:GetZoomedWidth() + gap)
+				self:x(-total / 2 + w)
 			end,
 		},
-		LoadFont("Common Normal")..{
-			Name="StatusMark",
-			InitCommand=function(self)
-				self:halign(0):zoom(PICKER_SIZES.markZoom):y(P_STATUS_Y + PICKER_SIZES.markY)
-			end,
-		},
+		StatusMark(),
 		LoadFont("Common Normal")..{
 			Name="StatusSub",
 			InitCommand=function(self) self:zoom(0.6):y(P_STATUS_SUB_Y):diffuse(PICKER_DIM) end,

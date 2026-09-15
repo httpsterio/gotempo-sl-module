@@ -304,6 +304,26 @@ profiles = {
 local owners = StrapOwners()
 check(#owners["24:AC:AC:18:41:CC"] == 2, "a shared strap lists both owners, whatever the mac case")
 check(#owners["11:22:33:44:55:66"] == 1, "a sole owner is listed")
+check(owners["11:22:33:44:55:66"][1] == "mira", "a profile nobody has joined is its name alone")
+
+-- A profile named like a side, loaded on the other one, is what confused a real
+-- test: its label has to say where it is.
+do
+	local savedProfiles = profiles
+	profiles = {
+		{ dir = "/p1/", name = "P2",    ini = { gotempo = { Device = "24:AC:AC:18:41:CC" } } },
+		{ dir = "/p2/", name = "P3",    ini = { gotempo = { Device = "C4:30:CB:39:85:4D" } } },
+		{ dir = "/a/",  name = "http",  ini = { gotempo = { Device = "A0:9E:1A:BF:18:A1" } } },
+	}
+	joined = { true, true }
+	local o = StrapOwners()
+	check(o["24:AC:AC:18:41:CC"][1] == "P2 (P1)", "a joined profile is labelled with its side")
+	check(o["C4:30:CB:39:85:4D"][1] == "P3 (P2)", "both sides are labelled")
+	check(o["A0:9E:1A:BF:18:A1"][1] == "http", "a saved profile that is not joined is not")
+	joined = { true, false }
+	check(StrapOwners()["C4:30:CB:39:85:4D"][1] == "P3", "an unjoined side's slot is not labelled")
+	profiles = savedProfiles
+end
 
 -- ── PickerRows ──────────────────────────────────────────────────────────────
 group("how the list is ordered")
@@ -315,9 +335,9 @@ local devices = {
 }
 local rows = PickerRows(devices, owners, nil)
 check(rows[1].name == "Alpha strap", "unclaimed straps come first")
-check(rows[2].divider == true, "a divider separates claimed from free")
-check(rows[3].name == "HRM-Dual" and rows[4].name == "Polar H10 1841", "claimed group is alphabetical")
-check(rows[3].owners ~= nil and rows[1].owners == nil, "only claimed rows carry owners")
+check(#rows == 3, "no divider row between free and claimed")
+check(rows[2].name == "HRM-Dual" and rows[3].name == "Polar H10 1841", "claimed group is alphabetical")
+check(rows[2].owners ~= nil and rows[1].owners == nil, "only claimed rows carry owners")
 
 -- Your own strap is not "in use by others" just because your profile claims it.
 local mine = PickerRows(devices, owners, "24:ac:ac:18:41:cc")
@@ -326,9 +346,9 @@ check(mine[1].owners == nil, "your own name is not listed against it")
 check(mine[2].name == "Alpha strap", "free straps still follow")
 
 check(#PickerRows({ { mac = "01:02:03:04:05:06", name = "Solo" } }, {}, nil) == 1,
-	"no divider when nothing is claimed")
+	"a lone free strap is one row")
 check(#PickerRows({ { mac = "11:22:33:44:55:66", name = "HRM-Dual" } }, owners, nil) == 1,
-	"no divider when nothing is free")
+	"a lone claimed strap is one row")
 
 -- ── the per-side menu ───────────────────────────────────────────────────────
 group("what a side offers")
@@ -466,9 +486,11 @@ group("cursor")
 
 st = { rows = PickerRows(devices, owners, nil), cursor = 1 }
 Move(st, 1)
-check(st.cursor == 3, "moving down steps over the divider")
+check(st.cursor == 2, "moving down steps one row")
 Move(st, -1)
-check(st.cursor == 1, "moving up steps back over it")
+check(st.cursor == 1, "moving up steps back")
+Move(st, -1)
+check(st.cursor == #st.rows, "the cursor wraps upward")
 st.cursor = #st.rows
 Move(st, 1)
 check(st.cursor == 1, "the cursor wraps")

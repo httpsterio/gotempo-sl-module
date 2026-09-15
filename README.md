@@ -109,8 +109,8 @@ own panel, driven by their own controller, showing their current strap and its l
 
 ```
 ┌──────────────────────────────┐  ┌──────────────────────────────┐
-│  P1 · http                   │  │  P2 · Sami KB · unsaved      │
-│  • Polar H10 1841CC31        │  │  × No strap selected         │
+│  http                        │  │  Sami KB (unsaved)           │
+│  ✓ Polar H10 1841CC31        │  │  ✗ No strap selected         │
 │    72 bpm                    │  │                              │
 │  ──────────────────────────  │  │  ──────────────────────────  │
 │  › Change strap              │  │  › Choose a strap            │
@@ -136,10 +136,11 @@ menu open.
 
 Choosing a strap scans for what is in range; gotempo does the scanning, since this module has
 no Bluetooth of its own, so gotempo has to be running. Whoever asks first starts the scan and
-both panels fill at once. Straps nobody has claimed are listed first, then a divider, then
-ones some profile already names with the names beside them — which is what makes the list
-readable in a room with several cabinets. Those are still pickable: two players sharing one
-strap is allowed, and gotempo connects it once and feeds both sides.
+both panels fill at once. The player's own strap is listed first in green, then straps nobody
+has claimed, then ones some profile already names, with the profile beside the MAC. A profile
+joined right now also shows its side, as `P3 (P2)`. That is what makes the list readable in a
+room with several cabinets. Claimed straps are still pickable: two players sharing one strap is
+allowed, and gotempo connects it once and feeds both sides.
 
 `Color` and `Thickness` are optional and affect only that player's evaluation graph: the line, its
 labels and the mean rule. Without them the line is red.
@@ -299,6 +300,7 @@ Use `luac5.1 -p gotempo.lua` to syntax check. The engine is Lua 5.1, and a newer
 accepts syntax it rejects — `\u{...}` escapes in particular.
 
 Text is drawn in `Common Normal`, which redirects to the bitmap font `Miso/_miso light`.
-Its pages cover CP1252 plus Latin-2 and Cyrillic, so `… — · × « » • ‹ ›` are available and
-anything outside that (`✓ ✗ ● ▸`, geometric shapes, dingbats) draws as a missing-glyph box.
-Check a new symbol against `Fonts/Miso/_miso light.ini` before using it.
+Its pages cover CP1252 plus Latin-2 and Cyrillic, so `‹ ›` are available and anything outside
+that (`✓ ✗ ● ▸`, geometric shapes, dingbats) draws as a missing-glyph box. The status check and
+cross are drawn with quads for that reason. Check a new symbol against
+`Fonts/Miso/_miso light.ini` before using it.
