@@ -1513,6 +1513,14 @@ local PICKER_SEL_BAR = color("#183143")	-- the selection blue mixed into the bac
 local PICKER_DRAW_ORDER = 200
 local PICKER_GUARD = 0.1		-- how often the input redirect is reasserted
 
+-- The picker is about two hundred actors, and the engine updates every one of
+-- them each frame whether or not they are drawn: a hidden frame skips drawing,
+-- not updating.  Off the song wheel they are pure overhead, measured at 0.8 fps
+-- of 204 during gameplay, so the frame hibernates instead.  Hibernation stops
+-- the whole subtree being updated; commands and messages still arrive, which is
+-- what wakes it.  The number is just "longer than any session".
+local PICKER_SLEEP = 86400
+
 -- Panel-local layout, written out rather than derived: deriving it put one row
 -- on top of another the moment a line was added between them.
 local P_HEADER_Y = -190
@@ -2307,6 +2315,9 @@ local function Picker()
 	local af = Def.ActorFrame{
 		InitCommand=function(self) self:xy(_screen.cx, _screen.cy):visible(false) end,
 		ModuleCommand=function(self)
+			-- Back on the song wheel: wake the subtree the clock put to sleep.
+			self:hibernate(0)
+
 			-- Leaving the screen with the picker up must not leave input
 			-- redirected, or the next screen is dead to every button.
 			if picker.open then PickerClose() end
@@ -2320,6 +2331,10 @@ local function Picker()
 			end
 		end,
 		GotempoPickerOpenMessageCommand=function(self)
+			-- Also a wake, and deliberately a second one: if the command above
+			-- ever stops arriving, the menu still opens rather than being dead.
+			self:hibernate(0)
+
 			-- Not opened here. The sort menu's own DirectInputToEngine is queued
 			-- behind this and un-redirects input on its way out, so a redirect
 			-- set now would simply be undone. The guard below picks this up on
@@ -2364,10 +2379,15 @@ local function Picker()
 			self:stoptweening():queuecommand("Tick")
 		end,
 		TickCommand=function(self)
+			self:sleep(POLL_SECONDS):queuecommand("Tick")
 			if TopScreenName() == owner then
 				self:GetParent():playcommand("Poll")
+				return
 			end
-			self:sleep(POLL_SECONDS):queuecommand("Tick")
+			-- Off the wheel there is nothing to poll and nothing to draw, so the
+			-- whole picker stops being updated until ModuleCommand wakes it.
+			-- The tick above is queued first so the chain resumes on waking.
+			self:GetParent():hibernate(PICKER_SLEEP)
 		end,
 	}
 	af[#af+1] = Def.Actor{

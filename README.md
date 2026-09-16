@@ -86,7 +86,7 @@ what is in range.
 gotempo first writes `devices.txt` with only its stamp and the word `scanning`, before the scan
 starts, then the list about fifteen seconds later. No acknowledgement within a few seconds means
 gotempo is not running; an acknowledged scan that never finishes is reported separately. This
-needs gotempo 2.0.1 or later; with 2.0.0 the picker reports gotempo not running.
+needs gotempo 2.1.0 or later; with 2.0.0 the picker reports gotempo not running.
 
 ## Profiles
 
@@ -147,8 +147,8 @@ labels and the mean rule. Without them the line is red.
 
 `Color` is hex, with or without the `#`, six digits or eight for an alpha. The menu offers a named
 palette, and a colour set by hand that isn't in it is added to the list as **P1 custom** or
-**P2 custom** while that player is joined — offered to the other player too, and gone from the
-list once nobody has it saved.
+**P2 custom** while that player is joined. It is offered to the other player too, and gone from
+the list once nobody has it saved.
 
 `Thickness` multiplies the configured width and holds at every slope rather than only on the
 flat. It runs from 0.1 to 4.0 in tenths: a finer value such as `1.25` is drawn as `1.3`, and
